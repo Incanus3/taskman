@@ -47,9 +47,8 @@ defmodule Taskman.Accounts.ApiKeys do
 
   @spec list_api_keys(User.t()) :: {:ok, [ApiKey.t()]} | {:error, term()}
   def list_api_keys(actor) do
-    with {:ok, actor} <- Authentication.current_api_key_actor(actor),
-         {:ok, keys} <- list_owned_api_keys(actor) do
-      {:ok, keys}
+    with {:ok, actor} <- Authentication.current_api_key_actor(actor) do
+      list_owned_api_keys(actor)
     end
   end
 

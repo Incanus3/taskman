@@ -4,8 +4,9 @@ defmodule Taskman.Tasks.BlockingPersistenceTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Tasks.BlockingLink
-  alias Taskman.Tasks.BlockingPersistence
+  alias Ecto.Adapters.SQL
+  alias Taskman.Tasks
+  alias Taskman.Tasks.{BlockingLink, BlockingPersistence}
 
   test "an ordered link can connect Tasks in different Projects" do
     blocker = task_fixture(project_fixture(%{}))
@@ -63,7 +64,7 @@ defmodule Taskman.Tasks.BlockingPersistenceTest do
     assert %DateTime{time_zone: "Etc/UTC"} = link.updated_at
 
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'task_blocking_links' AND column_name IN ('id', 'blocking_task_id', 'blocked_task_id') ORDER BY column_name",
         []
@@ -78,7 +79,7 @@ defmodule Taskman.Tasks.BlockingPersistenceTest do
 
   test "both endpoint lookup indexes and the ordered-pair unique index exist" do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'task_blocking_links'",
         []
@@ -111,13 +112,13 @@ defmodule Taskman.Tasks.BlockingPersistenceTest do
     assert BlockingPersistence.outgoing(first.id) == []
     assert BlockingPersistence.incoming(last.id) == []
     assert Enum.map(BlockingPersistence.outgoing(last.id), & &1.id) == [surviving.id]
-    assert Repo.get(Taskman.Tasks.Task, first.id)
-    assert Repo.get(Taskman.Tasks.Task, last.id)
+    assert Repo.get(Tasks.Task, first.id)
+    assert Repo.get(Tasks.Task, last.id)
 
     Repo.delete!(first)
 
     assert BlockingPersistence.outgoing(last.id) == []
-    assert Repo.get(Taskman.Tasks.Task, last.id)
+    assert Repo.get(Tasks.Task, last.id)
   end
 
   test "deleting a link retains both endpoint Tasks" do
@@ -128,7 +129,7 @@ defmodule Taskman.Tasks.BlockingPersistenceTest do
     assert {:ok, %BlockingLink{id: deleted_id}} = BlockingPersistence.delete(link)
     assert deleted_id == link.id
     assert BlockingPersistence.outgoing(blocker.id) == []
-    assert Repo.get(Taskman.Tasks.Task, blocker.id)
-    assert Repo.get(Taskman.Tasks.Task, blocked.id)
+    assert Repo.get(Tasks.Task, blocker.id)
+    assert Repo.get(Tasks.Task, blocked.id)
   end
 end

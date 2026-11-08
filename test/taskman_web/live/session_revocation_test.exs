@@ -6,9 +6,10 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
   import Taskman.AccountsFixtures
 
   alias AshAuthentication.Jwt
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Phoenix.Socket
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.Token
-  alias Taskman.Repo
   alias TaskmanWeb.AuthController
 
   test "each stored browser session gets an isolated socket identity", %{conn: conn} do
@@ -42,8 +43,8 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
                jti(Plug.Conn.get_session(second, :user_token))
              )
 
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
   end
 
   test "revoking every credential disconnects browser sessions only", %{conn: conn} do
@@ -62,9 +63,9 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     TaskmanWeb.Endpoint.subscribe(setup_socket)
 
     assert :ok = Token.revoke_all_for_subject(user)
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^setup_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^setup_socket, event: "disconnect"}
   end
 
   test "password-change replacement seam preserves the acting token while revoking peers", %{
@@ -86,8 +87,8 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     assert :ok = Token.valid_for_purpose?(replacement, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(acting_token, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(peer_token, "user")
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^acting_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^acting_socket, event: "disconnect"}
 
     assert {:ok, %{"exp" => expires_at}} = Jwt.peek(replacement)
     lifetime = expires_at - System.system_time(:second)
@@ -108,7 +109,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     assert {:error, :invalid_session} = AuthController.replace_session_token(user, forged)
     assert :ok = Token.valid_for_purpose?(acting_token, "user")
     assert :ok = Token.valid_for_purpose?(peer_token, "user")
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
   end
 
   test "reset rollback leaves browser sessions valid and emits no disconnect", %{conn: conn} do
@@ -134,7 +135,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
              )
 
     assert :ok = Token.valid_for_purpose?(browser_token, "user")
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^browser_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^browser_socket, event: "disconnect"}
   end
 
   test "reset revocation failure rolls back without broadcasting a disconnect", %{conn: conn} do
@@ -165,11 +166,11 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
     assert :ok = Token.valid_for_purpose?(browser_token, "user")
     assert :ok = Token.valid_for_purpose?(reset_token, "password_reset")
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^browser_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^browser_socket, event: "disconnect"}
   end
 
   test "rotation revokes a peer created while the acting token is locked", %{conn: conn} do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       user = user_fixture()
 
       try do
@@ -191,8 +192,8 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
           assert {:ok, replacement} = Task.await(replacer.task, :infinity)
           assert :ok = Token.valid_for_purpose?(replacement, "user")
           assert {:error, :invalid_token} = Token.valid_for_purpose?(peer_token, "user")
-          assert_receive %Phoenix.Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
-          refute_receive %Phoenix.Socket.Broadcast{topic: ^acting_socket, event: "disconnect"}
+          assert_receive %Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
+          refute_receive %Socket.Broadcast{topic: ^acting_socket, event: "disconnect"}
         end)
       after
         delete_user_with_tokens(user)
@@ -203,7 +204,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
   test "replacement racing a revoke never retires peers after the acting token loses its lock", %{
     conn: conn
   } do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       user = user_fixture()
 
       try do
@@ -226,7 +227,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
           assert :ok = Task.await(revoker.task, :infinity)
           assert {:error, :invalid_session} = Task.await(replacer.task, :infinity)
           assert :ok = Token.valid_for_purpose?(peer_token, "user")
-          refute_receive %Phoenix.Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
+          refute_receive %Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
         end)
       after
         delete_user_with_tokens(user)
@@ -254,8 +255,8 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
     assert :ok = Token.valid_for_purpose?(first_token, "user")
     assert :ok = Token.valid_for_purpose?(second_token, "user")
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
   end
 
   defp jti(token) do
@@ -281,7 +282,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     function_name = "taskman_session_fail_#{suffix}"
     trigger_name = "#{function_name}_trigger"
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -299,7 +300,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -312,8 +313,8 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     try do
       fun.()
     after
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tokens")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tokens")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -322,14 +323,14 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
     task =
       Task.async(fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
         try do
           {:ok, token, _claims} = Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user)
           send(test_pid, {:independent_token_created, self()})
           token
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = SQL.Sandbox.checkin(Repo)
         end
       end)
 
@@ -344,7 +345,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
     locker =
       Task.async(fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
         try do
           Repo.transaction(fn ->
@@ -363,7 +364,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
             end
           end)
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = SQL.Sandbox.checkin(Repo)
         end
       end)
 
@@ -383,13 +384,13 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     test_pid = self()
 
     Task.async(fn ->
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
       try do
         send(test_pid, {:replacement_started, self(), database_backend_pid()})
         AuthController.replace_session_token(user, acting_token)
       after
-        :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+        :ok = SQL.Sandbox.checkin(Repo)
       end
     end)
     |> then(fn task ->
@@ -403,13 +404,13 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     test_pid = self()
 
     Task.async(fn ->
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
       try do
         send(test_pid, {:revocation_started, self(), database_backend_pid()})
         Token.revoke_jti(jti, subject, disconnect?: false)
       after
-        :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+        :ok = SQL.Sandbox.checkin(Repo)
       end
     end)
     |> then(fn task ->
@@ -428,7 +429,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
   defp await_backend_lock(backend_pid, attempts_left) do
     assert %{rows: [[waiting]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                SELECT count(*)
@@ -447,7 +448,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
   end
 
   defp database_backend_pid do
-    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    assert %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend_pid
   end
 
@@ -455,7 +456,7 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
     subject = AshAuthentication.user_to_subject(user)
     Repo.delete_all(from token in Token, where: token.subject == ^subject)
 
-    case Repo.get(Taskman.Accounts.User, user.id) do
+    case Repo.get(Accounts.User, user.id) do
       nil -> :ok
       persisted_user -> Repo.delete!(persisted_user)
     end

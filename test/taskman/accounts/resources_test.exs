@@ -3,6 +3,7 @@ defmodule Taskman.Accounts.ResourcesTest do
 
   import Taskman.AccountsFixtures
 
+  alias Ash.Resource
   alias Taskman.Accounts
   alias Taskman.Accounts.{ApiKey, User}
 
@@ -34,15 +35,15 @@ defmodule Taskman.Accounts.ResourcesTest do
   end
 
   test "credential fields are sensitive and non-public" do
-    assert Ash.Resource.Info.attribute(User, :hashed_password).sensitive?
-    refute Ash.Resource.Info.attribute(User, :hashed_password).public?
+    assert Resource.Info.attribute(User, :hashed_password).sensitive?
+    refute Resource.Info.attribute(User, :hashed_password).public?
 
-    assert Ash.Resource.Info.attribute(ApiKey, :api_key_hash).sensitive?
-    refute Ash.Resource.Info.attribute(ApiKey, :api_key_hash).public?
+    assert Resource.Info.attribute(ApiKey, :api_key_hash).sensitive?
+    refute Resource.Info.attribute(ApiKey, :api_key_hash).public?
   end
 
   test "the user resource exposes the API-key sign-in action" do
-    assert Ash.Resource.Info.action(User, :sign_in_with_api_key)
+    assert Resource.Info.action(User, :sign_in_with_api_key)
   end
 
   test "API key records persist only the hash" do

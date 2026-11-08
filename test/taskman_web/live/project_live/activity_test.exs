@@ -7,9 +7,10 @@ defmodule TaskmanWeb.ProjectLive.ActivityTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.{Repo, Tasks}
+  alias Ecto.Adapters.SQL
   alias Taskman.ChangeNotifications.Event
-  alias Taskman.Tasks.Activity.Event, as: ActivityEvent
+  alias Taskman.{Repo, Tasks}
+  alias Taskman.Tasks.Activity
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -207,7 +208,7 @@ defmodule TaskmanWeb.ProjectLive.ActivityTest do
     {:ok, attached} = Tasks.update_task(project, task, %{}, parent: parent, actor: actor)
     {:ok, _} = Tasks.update_task(project, attached, %{}, parent: nil, actor: user_fixture())
     Repo.delete!(parent)
-    Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
+    SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
     {:ok, entries} = Tasks.list_activity(project, task)
     entry = Enum.find(entries, &(&1.change.field == "parent_task_id" && &1.change.after != nil))
@@ -268,7 +269,7 @@ defmodule TaskmanWeb.ProjectLive.ActivityTest do
   defp set_event_time(entry, time) do
     "event-" <> id = entry.id
 
-    Repo.get!(ActivityEvent, id)
+    Repo.get!(Activity.Event, id)
     |> Ecto.Changeset.change(first_changed_at: time, last_changed_at: time)
     |> Repo.update!()
   end

@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.Commands.TasksTest do
   use ExUnit.Case, async: true
 
+  alias Taskman.CLI.Fixtures
+
   setup {Req.Test, :verify_on_exit!}
 
   @search_summary %{
@@ -110,7 +112,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
   end
 
   defp run_search(argv) do
-    Taskman.CLI.Fixtures.run_with_host(argv,
+    Fixtures.run_with_host(argv,
       req_options: [plug: {Req.Test, TaskCommands}]
     )
   end
@@ -140,7 +142,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "list", "--project", "7", "--list", "11", "--include-descendants"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -168,7 +170,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "list",
@@ -205,7 +207,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "list",
@@ -248,7 +250,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["tasks", "list", "--project", "7"],
+      Fixtures.run_with_host(["tasks", "list", "--project", "7"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -282,7 +284,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["tasks", "list", "--project", "7"],
+      Fixtures.run_with_host(["tasks", "list", "--project", "7"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -312,7 +314,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["tasks", "show", "--project", "7", "42", "--json"],
+      Fixtures.run_with_host(["tasks", "show", "--project", "7", "42", "--json"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -365,7 +367,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "create",
@@ -423,7 +425,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "create",
@@ -474,7 +476,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "create", "--project", "7", "--title", "Root task"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -500,7 +502,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "create", "--project", "7", "--title", "Child", "--parent", "42", "--json"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -524,7 +526,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "update",
@@ -563,7 +565,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "tasks",
           "update",
@@ -597,7 +599,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "update", "--project", "7", "42", "--clear-due-at"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -619,7 +621,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     set_parent =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "update", "--project", "7", "42", "--parent", "41"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -638,7 +640,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     clear_parent =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "update", "--project", "7", "42", "--no-parent", "--json"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -657,7 +659,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["tasks", "hierarchy", "--project", "7", "51", "--json"],
+      Fixtures.run_with_host(["tasks", "hierarchy", "--project", "7", "51", "--json"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -678,7 +680,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "move", "--project", "7", "42", "--to-list", "11", "--json"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )
@@ -707,7 +709,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["tasks", "move", "--project", "7", "42", "--to-project-root"],
         req_options: [plug: {Req.Test, TaskCommands}]
       )

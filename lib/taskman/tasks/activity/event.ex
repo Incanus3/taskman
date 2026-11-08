@@ -1,4 +1,6 @@
 defmodule Taskman.Tasks.Activity.Event do
+  alias Taskman.Tasks.Task
+
   @moduledoc false
   use Ecto.Schema
 
@@ -40,7 +42,7 @@ defmodule Taskman.Tasks.Activity.Event do
         }
 
   schema "task_activity_events" do
-    belongs_to :task, Taskman.Tasks.Task
+    belongs_to :task, Task
     field :actor_user_id, Ecto.UUID
     field :grouping_key, :string
     field :kind, :string

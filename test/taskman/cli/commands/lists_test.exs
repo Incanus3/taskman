@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.Commands.ListsTest do
   use ExUnit.Case, async: true
 
+  alias Taskman.CLI.Fixtures
+
   setup {Req.Test, :verify_on_exit!}
 
   test "lists lists in readable tree order with parent and full path" do
@@ -24,7 +26,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["lists", "list", "--project", "7"],
+      Fixtures.run_with_host(["lists", "list", "--project", "7"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -53,7 +55,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["lists", "list", "--project", "7"],
+      Fixtures.run_with_host(["lists", "list", "--project", "7"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -79,7 +81,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
+      Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -103,7 +105,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
+      Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -135,7 +137,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["lists", "create", "--project", "7", "--name", "Launch", "--parent", "11", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
@@ -162,7 +164,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["lists", "create", "--project", "7", "--name", "Planning"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
@@ -196,7 +198,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["lists", "rename", "--project", "7", "12", "--name", "Released", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )

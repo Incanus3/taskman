@@ -29,6 +29,7 @@ defmodule TaskmanWeb.CoreComponents do
   use Phoenix.Component
   use Gettext, backend: TaskmanWeb.Gettext
 
+  alias Phoenix.HTML
   alias Phoenix.LiveView.JS
 
   @doc """
@@ -204,7 +205,7 @@ defmodule TaskmanWeb.CoreComponents do
   @doc """
   Renders an input with label and error messages.
 
-  A `Phoenix.HTML.FormField` may be passed as argument,
+  A `HTML.FormField` may be passed as argument,
   which is used to retrieve the input name, id, and values.
   Otherwise all attributes may be passed explicitly.
 
@@ -251,13 +252,13 @@ defmodule TaskmanWeb.CoreComponents do
     values: ~w(checkbox color date datetime-local email file month number password
                search select tel text textarea time url week hidden)
 
-  attr :field, Phoenix.HTML.FormField,
+  attr :field, HTML.FormField,
     doc: "a form field struct retrieved from the form, for example: @form[:email]"
 
   attr :errors, :list, default: []
   attr :checked, :boolean, doc: "the checked flag for checkbox inputs"
   attr :prompt, :string, default: nil, doc: "the prompt for select inputs"
-  attr :options, :list, doc: "the options to pass to Phoenix.HTML.Form.options_for_select/2"
+  attr :options, :list, doc: "the options to pass to HTML.Form.options_for_select/2"
   attr :multiple, :boolean, default: false, doc: "the multiple flag for select inputs"
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
@@ -267,7 +268,7 @@ defmodule TaskmanWeb.CoreComponents do
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
                 multiple pattern placeholder readonly required rows size step)
 
-  def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
+  def input(%{field: %HTML.FormField{} = field} = assigns) do
     errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
 
     assigns
@@ -287,7 +288,7 @@ defmodule TaskmanWeb.CoreComponents do
   def input(%{type: "checkbox"} = assigns) do
     assigns =
       assign_new(assigns, :checked, fn ->
-        Phoenix.HTML.Form.normalize_value("checkbox", assigns[:value])
+        HTML.Form.normalize_value("checkbox", assigns[:value])
       end)
 
     ~H"""
@@ -330,7 +331,7 @@ defmodule TaskmanWeb.CoreComponents do
           {@rest}
         >
           <option :if={@prompt} value="">{@prompt}</option>
-          {Phoenix.HTML.Form.options_for_select(@options, @value)}
+          {HTML.Form.options_for_select(@options, @value)}
         </select>
       </label>
       <.error :for={msg <- @errors}>{msg}</.error>
@@ -351,7 +352,7 @@ defmodule TaskmanWeb.CoreComponents do
             @errors != [] && (@error_class || "textarea-error")
           ]}
           {@rest}
-        >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
+        >{HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
@@ -376,7 +377,7 @@ defmodule TaskmanWeb.CoreComponents do
             type={@type}
             name={@name}
             id={@id}
-            value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+            value={HTML.Form.normalize_value(@type, @value)}
             class="grow"
             {@rest}
           />
@@ -386,7 +387,7 @@ defmodule TaskmanWeb.CoreComponents do
           type={@type}
           name={@name}
           id={@id}
-          value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+          value={HTML.Form.normalize_value(@type, @value)}
           class={[
             @class || "w-full input",
             @errors != [] && (@error_class || "input-error")
@@ -630,6 +631,7 @@ defmodule TaskmanWeb.CoreComponents do
   end
 
   defp cancel_modal(js, _id, true), do: js
+
   defp cancel_modal(js, id, false), do: hide_modal(js, id)
 
   defp modal_escape(on_cancel, nil, id, defer_cancel?),

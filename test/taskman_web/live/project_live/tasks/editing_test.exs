@@ -4,6 +4,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.EditingTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Phoenix.LiveView
   alias Taskman.Tasks
   alias TaskmanWeb.ProjectLive
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Creation, Editing, Hierarchy}
@@ -58,8 +59,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.EditingTest do
     project = project_fixture(%{})
     task = task_fixture(project)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    socket = %LiveView.Socket{
+      private: %{live_temp: %{}, lifecycle: LiveView.Lifecycle.build([])}
     }
 
     {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
@@ -98,8 +99,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.EditingTest do
     project = project_fixture(%{})
     task = task_fixture(project)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    socket = %LiveView.Socket{
+      private: %{live_temp: %{}, lifecycle: LiveView.Lifecycle.build([])}
     }
 
     {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)

@@ -5,6 +5,7 @@ defmodule Taskman.Tasks.Activity.RelationshipsTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks
   alias Taskman.Tasks.{Activity, BlockingPersistence, Mutations, Writes}
   alias Taskman.Tasks.Activity.Event
@@ -191,7 +192,7 @@ defmodule Taskman.Tasks.Activity.RelationshipsTest do
     assert {:ok, _} = Tasks.add_block(project, source, target, actor: actor)
     before = changes(project, source)
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE task_activity_events ADD CONSTRAINT reject_relationship_history CHECK (kind != 'block_changed' AND field IS DISTINCT FROM 'parent_task_id') NOT VALID"
     )

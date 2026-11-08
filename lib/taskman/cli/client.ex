@@ -1,7 +1,8 @@
 defmodule Taskman.CLI.Client do
   @moduledoc "Req-backed transport for the versioned Taskman JSON API."
 
-  alias Taskman.CLI.Registry
+  alias Taskman.CLI.Config.Document
+  alias Taskman.CLI.{Context, Registry}
 
   @connection_guidance "Start the backend from the Taskman repository with `mix phx.server`, or run `taskman agent onboarding` for setup guidance."
   @error_contract %{
@@ -64,10 +65,10 @@ defmodule Taskman.CLI.Client do
 
   defp relative_path?(_path), do: false
 
-  defp valid_context?(%Taskman.CLI.Context{host: host, api_url: url, api_key: key}) do
-    Taskman.CLI.Config.Document.validate_host_name(host) == :ok and
-      Taskman.CLI.Config.Document.validate_url(url) == :ok and
-      Taskman.CLI.Config.Document.validate_api_key(key) == :ok
+  defp valid_context?(%Context{host: host, api_url: url, api_key: key}) do
+    Document.validate_host_name(host) == :ok and
+      Document.validate_url(url) == :ok and
+      Document.validate_api_key(key) == :ok
   end
 
   defp valid_context?(_context), do: false
@@ -147,18 +148,9 @@ defmodule Taskman.CLI.Client do
 
   defp classify_response(_response, api_url, _success_shape), do: invalid_response(api_url)
 
-  defp valid_success(body, success_shape) when is_map(body) do
-    if Map.keys(body) == ["data"] do
-      case Map.fetch(body, "data") do
-        {:ok, data} when is_map(data) or is_list(data) ->
-          if valid_success_data?(data, success_shape), do: {:ok, data}, else: :error
-
-        _ ->
-          :error
-      end
-    else
-      :error
-    end
+  defp valid_success(%{"data" => data} = body, success_shape)
+       when map_size(body) == 1 and (is_map(data) or is_list(data)) do
+    if valid_success_data?(data, success_shape), do: {:ok, data}, else: :error
   end
 
   defp valid_success(_body, _success_shape), do: :error
@@ -210,10 +202,7 @@ defmodule Taskman.CLI.Client do
       task,
       ~w(id project_id list_id parent_task_id title description status priority due_at location)
     ) and
-      positive_integer?(task["id"]) and
-      positive_integer?(task["project_id"]) and
-      optional_positive_integer?(task["list_id"]) and
-      optional_positive_integer?(task["parent_task_id"]) and
+      valid_task_identifiers?(task) and
       is_binary(task["title"]) and
       is_binary(task["description"]) and
       task["status"] in Registry.statuses() and
@@ -249,26 +238,33 @@ defmodule Taskman.CLI.Client do
       utc_iso_datetime?(comment["created_at"])
   end
 
-  defp valid_resource?(entry, :activity_entry) when is_map(entry) do
-    case entry do
-      %{"kind" => "comment", "comment" => comment} ->
-        exact_keys?(entry, ~w(id kind occurred_at comment)) and
-          valid_resource?(comment, :comment) and
-          entry["id"] == "comment-#{comment["id"]}" and
-          same_utc_time?(entry["occurred_at"], comment["created_at"])
-
-      %{"kind" => "change", "change" => change} ->
-        exact_keys?(entry, ~w(id kind occurred_at change)) and
-          is_binary(entry["id"]) and Regex.match?(~r/^event-[1-9][0-9]*$/, entry["id"]) and
-          valid_activity_change?(change) and
-          same_utc_time?(entry["occurred_at"], change["last_changed_at"])
-
-      _ ->
-        false
-    end
-  end
+  defp valid_resource?(entry, :activity_entry) when is_map(entry),
+    do: valid_activity_entry?(entry)
 
   defp valid_resource?(_resource, _type), do: false
+
+  defp valid_task_identifiers?(task) do
+    positive_integer?(task["id"]) and
+      positive_integer?(task["project_id"]) and
+      optional_positive_integer?(task["list_id"]) and
+      optional_positive_integer?(task["parent_task_id"])
+  end
+
+  defp valid_activity_entry?(%{"kind" => "comment", "comment" => comment} = entry) do
+    exact_keys?(entry, ~w(id kind occurred_at comment)) and
+      valid_resource?(comment, :comment) and
+      entry["id"] == "comment-#{comment["id"]}" and
+      same_utc_time?(entry["occurred_at"], comment["created_at"])
+  end
+
+  defp valid_activity_entry?(%{"kind" => "change", "change" => change} = entry) do
+    exact_keys?(entry, ~w(id kind occurred_at change)) and
+      is_binary(entry["id"]) and Regex.match?(~r/^event-[1-9][0-9]*$/, entry["id"]) and
+      valid_activity_change?(change) and
+      same_utc_time?(entry["occurred_at"], change["last_changed_at"])
+  end
+
+  defp valid_activity_entry?(_entry), do: false
 
   defp valid_activity_change?(change) when is_map(change) do
     exact_keys?(

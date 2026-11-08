@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.Tasks.Table do
+  @moduledoc "Renders streamed Task rows and table controls."
+
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
@@ -458,8 +460,10 @@ defmodule TaskmanWeb.Tasks.Table do
   end
 
   defp aria_sort(nil), do: "none"
+
   defp aria_sort(:asc), do: "ascending"
   defp aria_sort(:desc), do: "descending"
+
   defp location_label([]), do: "Project"
   defp location_label(location_path), do: Enum.map_join(location_path, " / ", & &1.name)
 end

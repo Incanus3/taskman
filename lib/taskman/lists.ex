@@ -1,11 +1,11 @@
 defmodule Taskman.Lists do
+  @moduledoc "List management and navigation within Projects."
+
   import Ecto.Query
 
-  alias Taskman.ChangeNotifications
-  alias Taskman.Lists.NavigationNode
-  alias Taskman.Lists.TaskList
+  alias Taskman.{ChangeNotifications, Repo}
+  alias Taskman.Lists.{NavigationNode, TaskList}
   alias Taskman.Projects.Project
-  alias Taskman.Repo
 
   @type selected_location :: nil | {:project, pos_integer()} | {:list, pos_integer()}
   @type attributes :: %{optional(atom()) => term()} | %{optional(String.t()) => term()}

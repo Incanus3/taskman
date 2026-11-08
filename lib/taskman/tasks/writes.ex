@@ -1,12 +1,9 @@
 defmodule Taskman.Tasks.Writes do
   @moduledoc false
 
-  alias Taskman.Accounts
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.User
-  alias Taskman.Repo
-  alias Taskman.Tasks.Activity
-  alias Taskman.Tasks.Mutations
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{Activity, Mutations, Task}
 
   @type affected_task :: Activity.affected_task()
   @type changed_fields :: Mutations.changed_fields()

@@ -1,42 +1,41 @@
 defmodule TaskmanWeb.ProjectLive do
   use TaskmanWeb, :live_view
 
-  alias Taskman.Projects
-  alias Taskman.Lists.TaskList
-  alias Taskman.Tasks
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.ListingRow
+  alias Taskman.Lists.{NavigationNode, TaskList}
+  alias Taskman.{Projects, Tasks}
+  alias Taskman.Projects.Project
+  alias Taskman.Tasks.{ListingRow, Task}
 
-  alias TaskmanWeb.ProjectLive.Locations
-  alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.ShareTaskView
-  alias TaskmanWeb.ProjectLive.TaskTablePreferences
-  alias TaskmanWeb.ProjectLive.Reconciliation
+  alias TaskmanWeb.ProjectLive.{
+    Locations,
+    Paths,
+    Reconciliation,
+    ShareTaskView,
+    TaskTablePreferences,
+    Workspace
+  }
+
   alias TaskmanWeb.ProjectLive.Recovery, as: RecoveryWorkflow
-  alias TaskmanWeb.ProjectLive.Workspace
-  alias TaskmanWeb.ProjectLive.Tasks.Creation
-  alias TaskmanWeb.ProjectLive.Tasks.Creation.State, as: CreationState
-  alias TaskmanWeb.ProjectLive.Tasks.Listing
-  alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
 
   alias TaskmanWeb.ProjectLive.Tasks.{
-    Editing,
-    Description,
-    CommentDeparture,
     Activity,
+    CommentDeparture,
     Comments,
+    Creation,
+    Description,
+    Editing,
+    Listing,
+    LocationScope,
     Messages,
     Move,
     Movement,
     ParentPicker,
     ParentSelection,
-    LocationScope
+    StateOptions
   }
 
+  alias TaskmanWeb.{ProjectSelector, TaskCountBadge, WorkspaceNavigation}
   alias TaskmanWeb.Tasks.{Detail, Form, Recovery, Table}
-  alias TaskmanWeb.ProjectSelector
-  alias TaskmanWeb.WorkspaceNavigation
-  alias TaskmanWeb.TaskCountBadge
 
   @workspace_events Workspace.events()
   @listing_events Listing.events()
@@ -70,19 +69,19 @@ defmodule TaskmanWeb.ProjectLive do
 
     socket =
       stream_configure(socket, :navigation_nodes,
-        dom_id: fn %Taskman.Lists.NavigationNode{dom_id: dom_id} -> dom_id end
+        dom_id: fn %NavigationNode{dom_id: dom_id} -> dom_id end
       )
 
     socket =
       socket
       |> assign(:workspace, Workspace.State.new())
       |> assign(:projects_empty?, projects == [])
-      |> assign(:listing, ListingState.new(TaskTablePreferences.defaults().statuses))
+      |> assign(:listing, Listing.State.new(TaskTablePreferences.defaults().statuses))
       |> assign(:preferences_hydrated?, false)
       |> assign(:remembered_project_restore_attempted?, false)
       |> assign(:route_key, nil)
       |> assign(:route_filter_params, %{})
-      |> assign(:creation, CreationState.empty())
+      |> assign(:creation, Creation.State.empty())
       |> assign(:description, %Description.State{})
       |> assign(:task_parent_picker, ParentPicker.empty())
       |> assign(:editing, Editing.State.empty())
@@ -114,9 +113,7 @@ defmodule TaskmanWeb.ProjectLive do
           destination == socket.assigns.route_key ->
         {:noreply, assign(socket, :live_action, :show_task)}
 
-      destination == socket.assigns.route_key or is_nil(state.editor_id) or
-        match?({:new, _}, state.context) or
-          RecoveryWorkflow.State.active?(socket.assigns.recovery) ->
+      route_capture_unnecessary?(socket, state, destination) ->
         continue_params(params, uri, socket)
 
       true ->
@@ -143,34 +140,7 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, retain_comment_detail(socket)}
 
       true ->
-        case CommentDeparture.request(
-               departure,
-               selected_task(socket),
-               destination,
-               socket.assigns.comments.draft,
-               socket.assigns.route_key
-             ) do
-          {:confirm, departure} ->
-            {:noreply,
-             socket
-             |> assign(:comment_departure, departure)
-             |> retain_comment_detail()
-             |> push_patch(to: departure.origin, replace: true)}
-
-          {:pending, _departure} ->
-            {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
-
-          {:continue, departure} ->
-            socket = assign(socket, :comment_departure, departure)
-
-            case Editing.flush(socket, discard_done?: true) do
-              {:ok, socket} ->
-                {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
-
-              {:error, socket} ->
-                {:noreply, Editing.restore_failed_route(socket, params)}
-            end
-        end
+        request_route_departure(socket, departure, destination, params, uri)
     end
   end
 
@@ -182,7 +152,7 @@ defmodule TaskmanWeb.ProjectLive do
 
   defp selected_task(%{
          assigns: %{
-           workspace: %{selected_project: %Taskman.Projects.Project{} = project},
+           workspace: %{selected_project: %Project{} = project},
            editing: %{selected_task: %Task{id: id}}
          }
        }),
@@ -367,7 +337,7 @@ defmodule TaskmanWeb.ProjectLive do
     include_children? = not socket.assigns.workspace.include_children?
     workspace = %{socket.assigns.workspace | include_children?: include_children?}
 
-    listing = ListingState.available_sort(socket.assigns.listing, include_children?)
+    listing = Listing.State.available_sort(socket.assigns.listing, include_children?)
 
     {:noreply,
      socket
@@ -409,14 +379,7 @@ defmodule TaskmanWeb.ProjectLive do
     if event == "save_task" and creation_workflow_blocked?(socket) do
       {:noreply, socket}
     else
-      {socket, params} =
-        if event == "request_task_departure" do
-          {draft, params} = Map.pop(params, "draft")
-          socket = if is_binary(draft), do: Comments.set_draft(socket, draft), else: socket
-          {socket, params}
-        else
-          {socket, params}
-        end
+      {socket, params} = capture_departure_draft(socket, event, params)
 
       purpose =
         if event == "save_task", do: {:submit, params}, else: {:departure, {event, params}}
@@ -609,16 +572,7 @@ defmodule TaskmanWeb.ProjectLive do
 
         case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
           {:ok, socket} ->
-            case Comments.post(socket, socket.assigns.comments.draft) do
-              {:ok, socket} ->
-                {:noreply,
-                 socket
-                 |> assign(:comment_departure, CommentDeparture.empty())
-                 |> navigate_departure(destination)}
-
-              {:error, socket} ->
-                {:noreply, departure_post_failed(socket, departure)}
-            end
+            post_departure_comment(socket, departure, destination)
 
           {:error, socket} ->
             {:noreply,
@@ -772,7 +726,7 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp related_task_path(workspace, task_lists, summary) do
-    project = %Taskman.Projects.Project{id: summary.project_id}
+    project = %Project{id: summary.project_id}
     actual = if summary.location.list_id, do: %TaskList{id: summary.location.list_id}
 
     selected =
@@ -796,7 +750,7 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp form_status_options(workspace, form, list_id, revealed?) do
-    TaskmanWeb.ProjectLive.Tasks.StateOptions.for_form(
+    StateOptions.for_form(
       workspace.locations,
       workspace.selected_project.id,
       list_id,
@@ -813,4 +767,62 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp creation_list_id(_), do: nil
+
+  defp route_capture_unnecessary?(socket, state, destination) do
+    destination == socket.assigns.route_key or is_nil(state.editor_id) or
+      match?({:new, _}, state.context) or
+      RecoveryWorkflow.State.active?(socket.assigns.recovery)
+  end
+
+  defp request_route_departure(socket, departure, destination, params, uri) do
+    case CommentDeparture.request(
+           departure,
+           selected_task(socket),
+           destination,
+           socket.assigns.comments.draft,
+           socket.assigns.route_key
+         ) do
+      {:confirm, departure} ->
+        {:noreply,
+         socket
+         |> assign(:comment_departure, departure)
+         |> retain_comment_detail()
+         |> push_patch(to: departure.origin, replace: true)}
+
+      {:pending, _departure} ->
+        {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
+
+      {:continue, departure} ->
+        socket = assign(socket, :comment_departure, departure)
+
+        case Editing.flush(socket, discard_done?: true) do
+          {:ok, socket} ->
+            {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
+
+          {:error, socket} ->
+            {:noreply, Editing.restore_failed_route(socket, params)}
+        end
+    end
+  end
+
+  defp capture_departure_draft(socket, "request_task_departure", params) do
+    {draft, params} = Map.pop(params, "draft")
+    socket = if is_binary(draft), do: Comments.set_draft(socket, draft), else: socket
+    {socket, params}
+  end
+
+  defp capture_departure_draft(socket, _event, params), do: {socket, params}
+
+  defp post_departure_comment(socket, departure, destination) do
+    case Comments.post(socket, socket.assigns.comments.draft) do
+      {:ok, socket} ->
+        {:noreply,
+         socket
+         |> assign(:comment_departure, CommentDeparture.empty())
+         |> navigate_departure(destination)}
+
+      {:error, socket} ->
+        {:noreply, departure_post_failed(socket, departure)}
+    end
+  end
 end

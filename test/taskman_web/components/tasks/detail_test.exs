@@ -5,11 +5,12 @@ defmodule TaskmanWeb.Tasks.DetailTest do
 
   import Phoenix.LiveViewTest
 
+  alias Phoenix.LiveView.JS
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.ProjectLive.Tasks.{Activity, Autosave, Comments, Move, ParentPicker}
-  alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
+  alias Taskman.Tasks
+  alias Taskman.Tasks.{HierarchyNode, Task}
+  alias TaskmanWeb.ProjectLive.Tasks.{Activity, Autosave, Comments, Hierarchy, Move, ParentPicker}
   alias TaskmanWeb.Tasks.Detail
 
   test "header identifies the Task and wires its supplied Close action" do
@@ -19,7 +20,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       render_component(&Detail.header/1, %{
         task: task,
         close_id: "task-modal-close",
-        on_close: Phoenix.LiveView.JS.push("request_task_departure")
+        on_close: JS.push("request_task_departure")
       })
       |> LazyHTML.from_fragment()
 
@@ -45,9 +46,9 @@ defmodule TaskmanWeb.Tasks.DetailTest do
     task = task(41)
 
     task_hierarchy =
-      TaskHierarchy.load(
-        TaskHierarchy.empty(),
-        %Hierarchy{
+      Hierarchy.load(
+        Hierarchy.empty(),
+        %Tasks.Hierarchy{
           selected_task_id: task.id,
           root: hierarchy_node(task.id, [], [planning, launch])
         }
@@ -114,9 +115,9 @@ defmodule TaskmanWeb.Tasks.DetailTest do
         parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
         task_hierarchy:
-          TaskHierarchy.load(
-            TaskHierarchy.empty(),
-            %Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
+          Hierarchy.load(
+            Hierarchy.empty(),
+            %Tasks.Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
           ),
         task_path: fn task -> "/projects/7/tasks/#{task.id}" end,
         browse_path: fn
@@ -153,9 +154,9 @@ defmodule TaskmanWeb.Tasks.DetailTest do
         parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
         task_hierarchy:
-          TaskHierarchy.load(
-            TaskHierarchy.empty(),
-            %Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
+          Hierarchy.load(
+            Hierarchy.empty(),
+            %Tasks.Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
           ),
         task_path: fn task -> "/projects/7/tasks/#{task.id}" end,
         browse_path: fn
@@ -250,9 +251,9 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       parent_picker: ParentPicker.empty(),
       cancel: "/projects/7",
       task_hierarchy:
-        TaskHierarchy.load(
-          TaskHierarchy.empty(),
-          %Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
+        Hierarchy.load(
+          Hierarchy.empty(),
+          %Tasks.Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
         ),
       task_path: fn item -> "/projects/7/tasks/#{item.id}" end,
       browse_path: fn _ -> "/projects/7" end,

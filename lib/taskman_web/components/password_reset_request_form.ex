@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.PasswordResetRequestForm do
+  @moduledoc "Renders the password reset request form and its feedback."
+
   use TaskmanWeb, :live_component
 
   @impl true

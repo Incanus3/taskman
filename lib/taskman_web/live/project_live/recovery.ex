@@ -4,10 +4,8 @@ defmodule TaskmanWeb.ProjectLive.Recovery do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [push_patch: 2]
 
-  alias Taskman.Lists
-  alias Taskman.Projects
+  alias Taskman.{Lists, Projects, Tasks}
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Paths
 
@@ -352,15 +350,19 @@ defmodule TaskmanWeb.ProjectLive.Recovery do
         {:error, :project_not_found}
 
       %Project{} = project ->
-        case Tasks.get_task_for_project(project, task_id) do
-          nil ->
-            {:error, :task_not_found}
+        resolve_project_detail_target(project, task_id)
+    end
+  end
 
-          %Task{} = task ->
-            case resolve_task_location(project, task) do
-              {:ok, destination} -> {:ok, project, task, destination}
-              {:error, :destination_not_found} = error -> error
-            end
+  defp resolve_project_detail_target(project, task_id) do
+    case Tasks.get_task_for_project(project, task_id) do
+      nil ->
+        {:error, :task_not_found}
+
+      %Task{} = task ->
+        case resolve_task_location(project, task) do
+          {:ok, destination} -> {:ok, project, task, destination}
+          {:error, :destination_not_found} = error -> error
         end
     end
   end
@@ -406,6 +408,7 @@ defmodule TaskmanWeb.ProjectLive.Recovery do
   defp snapshot_task_id(snapshot), do: snapshot.editing.selected_task.id
 
   defp route_list_id(nil), do: nil
+
   defp route_list_id(%{id: id}), do: id
 
   defp route_param_list_id(%{"list_id" => id}) do
@@ -483,6 +486,7 @@ defmodule TaskmanWeb.ProjectLive.Recovery do
   end
 
   defp format_value(nil), do: ""
+
   defp format_value(%NaiveDateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%dT%H:%M")
   defp format_value(value), do: to_string(value)
 end

@@ -6,11 +6,11 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
 
   import Taskman.TasksFixtures
 
-  alias TaskmanWeb.ProjectLive.Locations
-  alias TaskmanWeb.ProjectLive.ListEdit
-  alias TaskmanWeb.ProjectLive.Workspace
-  alias TaskmanWeb.ProjectLive.Workspace.State
+  alias Phoenix.LiveView
   alias Taskman.ChangeNotifications.Event
+  alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Workspace}
+  alias TaskmanWeb.ProjectLive.Tasks.{Creation, Description, Listing}
+  alias TaskmanWeb.ProjectLive.Workspace.State
 
   test "location transitions keep found and not-found state mutually consistent" do
     project = project_fixture(%{})
@@ -201,14 +201,14 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
       Phoenix.Component.assign(
         socket,
         :creation,
-        TaskmanWeb.ProjectLive.Tasks.Creation.State.empty()
+        Creation.State.empty()
       )
-      |> Phoenix.Component.assign(:description, %TaskmanWeb.ProjectLive.Tasks.Description.State{})
+      |> Phoenix.Component.assign(:description, %Description.State{})
 
-    socket = TaskmanWeb.ProjectLive.Tasks.Creation.apply_route(socket, %{})
+    socket = Creation.apply_route(socket, %{})
 
     {:noreply, validated} =
-      TaskmanWeb.ProjectLive.Tasks.Creation.handle_event(
+      Creation.handle_event(
         "validate_task",
         %{"task" => %{"title" => "Draft"}, "location" => "list:#{task_list.id}"},
         socket
@@ -235,15 +235,15 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
     socket =
       socket
       |> Workspace.ensure_locations(project)
-      |> Phoenix.Component.assign(:creation, TaskmanWeb.ProjectLive.Tasks.Creation.State.empty())
-      |> Phoenix.Component.assign(:description, %TaskmanWeb.ProjectLive.Tasks.Description.State{})
+      |> Phoenix.Component.assign(:creation, Creation.State.empty())
+      |> Phoenix.Component.assign(:description, %Description.State{})
 
     child = list_fixture(project, task_list)
     parent_task = task_fixture(project, child, %{})
     watch_location_queries()
 
     socket =
-      TaskmanWeb.ProjectLive.Tasks.Creation.apply_route(socket, %{
+      Creation.apply_route(socket, %{
         "parent_task_id" => to_string(parent_task.id)
       })
 
@@ -337,8 +337,22 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
     reconciliation_socket(State.new())
     |> Phoenix.Component.assign(
       :listing,
-      TaskmanWeb.ProjectLive.Tasks.Listing.State.new([:pending])
+      Listing.State.new([:pending])
     )
+  end
+
+  defp notify_location_query(query, owner) do
+    cond do
+      String.starts_with?(query, "SELECT DISTINCT t0.\"list_id\", t0.\"status\"") ->
+        send(owner, :availability_query)
+
+      String.contains?(query, "FROM \"lists\" AS l0") and
+          String.contains?(query, "ORDER BY l0.\"inserted_at\"") ->
+        send(owner, :location_list_query)
+
+      true ->
+        :ok
+    end
   end
 
   defp watch_location_queries do
@@ -351,17 +365,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
         [:taskman, :repo, :query],
         fn _, _, metadata, owner ->
           if self() == owner do
-            cond do
-              String.starts_with?(metadata.query, "SELECT DISTINCT t0.\"list_id\", t0.\"status\"") ->
-                send(owner, :availability_query)
-
-              String.contains?(metadata.query, "FROM \"lists\" AS l0") and
-                  String.contains?(metadata.query, "ORDER BY l0.\"inserted_at\"") ->
-                send(owner, :location_list_query)
-
-              true ->
-                :ok
-            end
+            notify_location_query(metadata.query, owner)
           end
         end,
         owner
@@ -371,8 +375,8 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
   end
 
   defp reconciliation_socket(state) do
-    %Phoenix.LiveView.Socket{
-      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    %LiveView.Socket{
+      private: %{live_temp: %{}, lifecycle: LiveView.Lifecycle.build([])}
     }
     |> Phoenix.Component.assign(:workspace, state)
     |> Phoenix.Component.assign(:creation, :creation_draft)

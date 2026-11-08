@@ -61,6 +61,7 @@ defmodule Taskman.MixProject do
       {:hammer, "~> 7.4"},
       {:argon2_elixir, "~> 4.1"},
       {:sourceror, "~> 1.8", only: [:dev, :test]},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:postgrex, ">= 0.0.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
@@ -116,7 +117,13 @@ defmodule Taskman.MixProject do
         "esbuild taskman --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "credo",
+        "test"
+      ],
       "test.browser": [
         "assets.build",
         "test --only browser"

@@ -1,14 +1,11 @@
 defmodule Taskman.Tasks.Hierarchy do
+  @moduledoc "Task parentage validation and hierarchy queries."
+
   import Ecto.Query
 
-  alias Taskman.Lists
+  alias Taskman.{Lists, Repo}
   alias Taskman.Projects.Project
-  alias Taskman.Repo
-  alias Taskman.Tasks.HierarchyNode
-  alias Taskman.Tasks.Search
-  alias Taskman.Tasks.Status
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Tasks.{HierarchyNode, Search, Status, Task, TaskWithLocation}
 
   @enforce_keys [:selected_task_id, :root]
   defstruct [:selected_task_id, :root]

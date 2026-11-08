@@ -50,12 +50,16 @@ defmodule Taskman.CLI.Skill.FakeSkillFileSystem do
       Process.delete({__MODULE__, :write_failure})
       {:error, :injected_write_failure}
     else
-      case File.open(path, [:write, :exclusive, :binary], fn device ->
-             IO.binwrite(device, contents)
-           end) do
-        {:ok, :ok} -> :ok
-        {:error, _reason} = error -> error
-      end
+      write_exclusive_file(path, contents)
+    end
+  end
+
+  defp write_exclusive_file(path, contents) do
+    case File.open(path, [:write, :exclusive, :binary], fn device ->
+           IO.binwrite(device, contents)
+         end) do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 

@@ -168,26 +168,30 @@ defmodule Taskman.CLI.Presentation.Completions do
           value_completion =
             "COMPREPLY=( $(compgen -P #{bash_quote(option.long <> "=")} -W #{bash_quote(Enum.join(values, " "))} -- \"$value_prefix\") ); return"
 
-          case option_command_paths(option, commands) do
-            [] ->
-              "    #{option.long}=*)\n" <>
-                "      local value_prefix=\"${cur#*=}\"\n" <>
-                "      #{value_completion}\n" <>
-                "      ;;"
-
-            paths ->
-              path_patterns = Enum.map_join(paths, "|", &bash_case_pattern/1)
-
-              "    #{option.long}=*)\n" <>
-                "      local value_prefix=\"${cur#*=}\"\n" <>
-                "      case \"$command_path\" in\n" <>
-                "        #{path_patterns}) #{value_completion} ;;\n" <>
-                "      esac\n" <>
-                "      COMPREPLY=(); return\n" <>
-                "      ;;"
-          end
+          bash_inline_option_paths(option, commands, value_completion)
       end
     end)
+  end
+
+  defp bash_inline_option_paths(option, commands, value_completion) do
+    case option_command_paths(option, commands) do
+      [] ->
+        "    #{option.long}=*)\n" <>
+          "      local value_prefix=\"${cur#*=}\"\n" <>
+          "      #{value_completion}\n" <>
+          "      ;;"
+
+      paths ->
+        path_patterns = Enum.map_join(paths, "|", &bash_case_pattern/1)
+
+        "    #{option.long}=*)\n" <>
+          "      local value_prefix=\"${cur#*=}\"\n" <>
+          "      case \"$command_path\" in\n" <>
+          "        #{path_patterns}) #{value_completion} ;;\n" <>
+          "      esac\n" <>
+          "      COMPREPLY=(); return\n" <>
+          "      ;;"
+    end
   end
 
   defp option_command_paths(option, commands) do
@@ -218,10 +222,7 @@ defmodule Taskman.CLI.Presentation.Completions do
         |> Enum.reject(&is_nil/1)
 
       if selected_option && other_options != [] do
-        other_removals =
-          Enum.map_join(other_options, "\n", fn option ->
-            "      suggestions=\"${suggestions//#{option.long}/}\""
-          end)
+        other_removals = bash_other_option_removals(other_options)
 
         [
           "  if [[ \"$command_path\" == #{bash_quote(Enum.join(command.path, " "))} ]]; then",
@@ -236,6 +237,12 @@ defmodule Taskman.CLI.Presentation.Completions do
       end
     end)
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp bash_other_option_removals(other_options) do
+    Enum.map_join(other_options, "\n", fn option ->
+      "      suggestions=\"${suggestions//#{option.long}/}\""
+    end)
   end
 
   defp constraint_groups(command) do
@@ -323,8 +330,7 @@ defmodule Taskman.CLI.Presentation.Completions do
 
     known_paths =
       known_command_paths
-      |> Enum.map(&fish_quote/1)
-      |> Enum.join(" ")
+      |> Enum.map_join(" ", &fish_quote/1)
 
     [
       "function __taskman_command_path",
@@ -462,9 +468,7 @@ defmodule Taskman.CLI.Presentation.Completions do
           |> Enum.reject(&(&1 == option.name))
           |> Enum.map(&option_for_name(command, &1))
           |> Enum.reject(&is_nil/1)
-          |> Enum.map(fn other ->
-            "not __fish_seen_argument --long #{String.trim_leading(other.long, "--")}"
-          end)
+          |> Enum.map(&fish_unseen_option_condition/1)
         else
           []
         end
@@ -472,6 +476,9 @@ defmodule Taskman.CLI.Presentation.Completions do
 
     join_fish_conditions([fish_command_condition(command) | constraint_conditions])
   end
+
+  defp fish_unseen_option_condition(option),
+    do: "not __fish_seen_argument --long #{String.trim_leading(option.long, "--")}"
 
   defp fish_command_comments(commands) do
     Enum.map(commands, fn command -> "# taskman #{Enum.join(command.path, " ")}" end)

@@ -1,9 +1,10 @@
 defmodule TaskmanWeb.ProjectSelector do
+  @moduledoc "Renders workspace Project selection and editing controls."
+
   use TaskmanWeb, :html
 
   alias Taskman.Projects.Project
-  alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.ProjectEdit
+  alias TaskmanWeb.ProjectLive.{Paths, ProjectEdit}
 
   @presets [
     {"Indigo", "6366F1"},

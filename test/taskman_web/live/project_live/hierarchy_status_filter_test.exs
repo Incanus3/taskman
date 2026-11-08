@@ -157,7 +157,9 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
         Tasks.get_task_for_project(c.project, c.unrelated.id),
         %{
           status: :pending
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
   end

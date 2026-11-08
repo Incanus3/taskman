@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.Commands.CommentsTest do
   use ExUnit.Case, async: true
 
+  alias Taskman.CLI.Fixtures
+
   setup {Req.Test, :verify_on_exit!}
 
   @comment %{
@@ -182,7 +184,7 @@ defmodule Taskman.CLI.Commands.CommentsTest do
     assert run(~w(tasks comments add --project 7 42)).status == 2
     assert run(~w(tasks comments list --project 7 0)).status == 2
 
-    assert Taskman.CLI.Fixtures.run_with_host(~w(tasks comments list --project 7 42),
+    assert Fixtures.run_with_host(~w(tasks comments list --project 7 42),
              authenticated?: false
            ).status == 7
   end
@@ -206,7 +208,7 @@ defmodule Taskman.CLI.Commands.CommentsTest do
   end
 
   defp run(args) do
-    Taskman.CLI.Fixtures.run_with_host(args,
+    Fixtures.run_with_host(args,
       req_options: [plug: {Req.Test, CommentsCommands}]
     )
   end

@@ -2,8 +2,17 @@ defmodule Taskman.Accounts.Invitations do
   @moduledoc false
 
   alias AshAuthentication.{AddOn.Confirmation, Info, Strategy}
-  alias Taskman.Accounts.{Administration, Delivery, Emails, SecurityLog, Token, User}
-  alias Taskman.Accounts.User.Persistence, as: UserPersistence
+
+  alias Taskman.Accounts.{
+    Administration,
+    Authentication,
+    Delivery,
+    Emails,
+    RateLimit,
+    SecurityLog,
+    Token,
+    User
+  }
 
   @spec invite_user(User.t(), map()) :: {:ok, User.t()} | {:error, term()}
   def invite_user(actor, params) when is_map(params) do
@@ -38,31 +47,12 @@ defmodule Taskman.Accounts.Invitations do
     result =
       with {:ok, actor} <- Administration.active_administrator(actor),
            :ok <-
-             Taskman.Accounts.RateLimit.check(:invitation_resend,
+             RateLimit.check(:invitation_resend,
                email: to_string(user.email),
                actor_id: actor.id
              ) do
-        case transact(fn ->
-               with {:ok, updated_user} <-
-                      update_user(user, :resend_invitation, %{}, actor: actor),
-                    :ok <- Token.revoke_for_subject(updated_user, "setup"),
-                    {:ok, token} <- setup_token(updated_user) do
-                 {:ok, {updated_user, token}}
-               end
-             end) do
-          {:ok, {updated_user, token}} ->
-            case Emails.deliver_invitation(to_string(updated_user.email), token) do
-              :ok ->
-                {:ok, updated_user}
-
-              {:error, _reason} = delivery_error ->
-                Delivery.log_failure(delivery_error)
-                {:error, {:delivery_failed, updated_user}}
-            end
-
-          {:error, _reason} = error ->
-            error
-        end
+        transact(fn -> rotate_invitation(actor, user) end)
+        |> invitation_resend_result()
       end
 
     SecurityLog.audit(result, :invitation_resent, :invitation_resend_rejected, actor, user)
@@ -71,16 +61,8 @@ defmodule Taskman.Accounts.Invitations do
   @spec revoke_invitation(User.t(), User.t()) :: :ok | {:error, term()}
   def revoke_invitation(actor, user) do
     with {:ok, actor} <- Administration.active_administrator(actor) do
-      case transact(fn ->
-             with {:ok, updated_user} <-
-                    update_user(user, :revoke_invitation, %{}, actor: actor),
-                  :ok <- Token.revoke_for_subject(updated_user, "setup") do
-               {:ok, :ok}
-             end
-           end) do
-        {:ok, :ok} -> :ok
-        {:error, _reason} = error -> error
-      end
+      transact(fn -> revoke_locked_invitation(actor, user) end)
+      |> invitation_revocation_result()
     end
   end
 
@@ -89,22 +71,10 @@ defmodule Taskman.Accounts.Invitations do
 
   def complete_setup(token, params, opts) when is_binary(token) and is_map(params) do
     {result, target} =
-      case Taskman.Accounts.Authentication.token_user(token) do
+      case Authentication.token_user(token) do
         {:ok, user} ->
           result =
-            transact(fn ->
-              with {:ok, _locked_user} <- lock_user(user.id),
-                   {:ok, _stored_token} <- Token.claim_for_redemption(token, "setup", now(opts)),
-                   {:ok, completed_user} <-
-                     Strategy.action(
-                       Info.strategy!(User, :setup),
-                       :confirm,
-                       Map.put(params, "confirm", token),
-                       domain: Taskman.Accounts
-                     ) do
-                {:ok, completed_user}
-              end
-            end)
+            transact(fn -> complete_locked_setup(user, token, params, opts) end)
 
           {result, user}
 
@@ -127,7 +97,7 @@ defmodule Taskman.Accounts.Invitations do
   end
 
   defp lock_user(id) do
-    case UserPersistence.lock(id) do
+    case User.Persistence.lock(id) do
       {:ok, user} -> {:ok, user}
       :error -> {:error, :invalid_token}
     end
@@ -168,4 +138,61 @@ defmodule Taskman.Accounts.Invitations do
   defp result_user(_result, fallback), do: fallback
 
   defp now(opts), do: Keyword.get(opts, :now, DateTime.utc_now())
+
+  defp rotate_invitation(actor, user) do
+    with {:ok, updated_user} <-
+           update_user(user, :resend_invitation, %{}, actor: actor),
+         :ok <- Token.revoke_for_subject(updated_user, "setup"),
+         {:ok, token} <- setup_token(updated_user) do
+      {:ok, {updated_user, token}}
+    end
+  end
+
+  defp revoke_locked_invitation(actor, user) do
+    with {:ok, updated_user} <-
+           update_user(user, :revoke_invitation, %{}, actor: actor),
+         :ok <- Token.revoke_for_subject(updated_user, "setup") do
+      {:ok, :ok}
+    end
+  end
+
+  defp complete_locked_setup(user, token, params, opts) do
+    with {:ok, _locked_user} <- lock_user(user.id),
+         {:ok, _stored_token} <- Token.claim_for_redemption(token, "setup", now(opts)) do
+      Strategy.action(
+        Info.strategy!(User, :setup),
+        :confirm,
+        Map.put(params, "confirm", token),
+        domain: Taskman.Accounts
+      )
+    end
+  end
+
+  defp deliver_rotated_invitation(updated_user, token) do
+    case Emails.deliver_invitation(to_string(updated_user.email), token) do
+      :ok ->
+        {:ok, updated_user}
+
+      {:error, _reason} = delivery_error ->
+        Delivery.log_failure(delivery_error)
+        {:error, {:delivery_failed, updated_user}}
+    end
+  end
+
+  defp invitation_resend_result(result) do
+    case result do
+      {:ok, {updated_user, token}} ->
+        deliver_rotated_invitation(updated_user, token)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp invitation_revocation_result(result) do
+    case result do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
 end

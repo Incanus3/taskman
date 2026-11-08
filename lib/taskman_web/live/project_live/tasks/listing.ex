@@ -1,12 +1,14 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
+  @moduledoc "Prepares and streams Task listings with sorting, filtering and expansion."
+
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [stream: 4]
 
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.{ListingProjection, Task}
-  alias TaskmanWeb.ProjectLive.{TaskTablePreferences, Workspace}
   alias TaskmanWeb.ProjectLive.Tasks.{Move, StateOptions}
+  alias TaskmanWeb.ProjectLive.{TaskTablePreferences, Workspace}
 
   @events [
     "toggle_task_status_filter",
@@ -27,6 +29,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   }
 
   defmodule State do
+    @moduledoc "Task listing filters, sorting and expanded row state."
+
     import Phoenix.Component, only: [to_form: 2]
 
     alias Taskman.Tasks.Task

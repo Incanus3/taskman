@@ -6,9 +6,7 @@ defmodule Taskman.Tasks.HierarchyTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
-  alias Taskman.Tasks.Hierarchy
-  alias Taskman.Tasks.HierarchyNode
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, TaskWithLocation}
 
   test "empty parent search returns eligible tasks in stable order and honors the limit" do
     project = project_fixture(%{})

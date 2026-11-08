@@ -114,11 +114,7 @@ defmodule Taskman.Accounts.Authentication do
 
         case Ash.read_one(query, domain: Taskman.Accounts) do
           {:ok, %ApiKey{user: %User{} = user} = api_key_record} ->
-            if api_key_matches?(api_key, api_key_record.api_key_hash) do
-              {:ok, user}
-            else
-              {:error, :invalid_credentials}
-            end
+            authenticate_loaded_api_key(api_key, api_key_record, user)
 
           {:ok, nil} ->
             _ = compare_dummy_api_key(api_key)
@@ -132,6 +128,14 @@ defmodule Taskman.Accounts.Authentication do
       :error ->
         _ = compare_dummy_api_key(api_key)
         {:error, :invalid_credentials}
+    end
+  end
+
+  defp authenticate_loaded_api_key(api_key, api_key_record, user) do
+    if api_key_matches?(api_key, api_key_record.api_key_hash) do
+      {:ok, user}
+    else
+      {:error, :invalid_credentials}
     end
   end
 

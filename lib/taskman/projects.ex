@@ -1,9 +1,10 @@
 defmodule Taskman.Projects do
+  @moduledoc "Project queries, changes, and change notifications."
+
   import Ecto.Query
 
-  alias Taskman.ChangeNotifications
+  alias Taskman.{ChangeNotifications, Repo}
   alias Taskman.Projects.Project
-  alias Taskman.Repo
 
   @project_fields [:name, :description, :icon, :color]
 
@@ -52,9 +53,7 @@ defmodule Taskman.Projects do
              stale_error_message: "Project no longer exists"
            ) do
         {:ok, updated} = result ->
-          if changed_fields != [] do
-            _ = ChangeNotifications.publish_project(updated, :updated, changed_fields)
-          end
+          publish_update(updated, changed_fields)
 
           result
 
@@ -66,5 +65,11 @@ defmodule Taskman.Projects do
 
   def change_project(%Project{} = project, attrs \\ %{}) do
     Project.changeset(project, attrs)
+  end
+
+  defp publish_update(_project, []), do: :ok
+
+  defp publish_update(project, fields) do
+    _ = ChangeNotifications.publish_project(project, :updated, fields)
   end
 end

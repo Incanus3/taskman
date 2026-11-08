@@ -4,6 +4,8 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
   import Taskman.ProjectsFixtures,
     only: [project_response_fixture: 0, project_response_fixture: 1]
 
+  alias Taskman.CLI.Fixtures
+
   setup {Req.Test, :verify_on_exit!}
 
   test "projects list requests the collection and renders readable identifying fields" do
@@ -15,7 +17,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["projects", "list"],
+      Fixtures.run_with_host(["projects", "list"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -30,7 +32,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["projects", "list"],
+      Fixtures.run_with_host(["projects", "list"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -48,7 +50,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7", "--json"],
+      Fixtures.run_with_host(["projects", "show", "7", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -72,7 +74,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7"],
+      Fixtures.run_with_host(["projects", "show", "7"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -96,7 +98,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["projects", "create", "--name", "CLI", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
@@ -123,7 +125,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["projects", "create", "--name", "CLI", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
@@ -142,7 +144,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7", "--json"],
+      Fixtures.run_with_host(["projects", "show", "7", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -183,7 +185,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         [
           "projects",
           "create",
@@ -217,7 +219,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.Fixtures.run_with_host(
+      Fixtures.run_with_host(
         ["projects", "update", "7", "--description", "", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )

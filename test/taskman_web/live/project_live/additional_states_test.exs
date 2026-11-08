@@ -8,10 +8,12 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Phoenix.LiveView
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.{Locations, Workspace}
+  alias TaskmanWeb.ProjectLive.Tasks.StateOptions
 
   setup %{conn: conn} do
     %{conn: log_in_user(conn, user_fixture())}
@@ -356,7 +358,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     {:noreply, opened} = Listing.handle_event("toggle_task_status_filter", %{}, opened)
     assert opened.assigns.listing.filter_open?
 
-    TaskmanWeb.ProjectLive.Tasks.StateOptions.for_form(
+    StateOptions.for_form(
       socket.assigns.workspace.locations,
       project.id,
       nil,
@@ -653,7 +655,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
   end
 
   defp socket(project) do
-    %Phoenix.LiveView.Socket{
+    %LiveView.Socket{
       assigns: %{
         __changed__: %{},
         workspace: %Workspace.State{selected_project: project, subscribed_project_id: project.id}

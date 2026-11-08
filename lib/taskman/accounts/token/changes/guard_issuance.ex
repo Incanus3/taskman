@@ -10,22 +10,7 @@ defmodule Taskman.Accounts.Token.Changes.GuardIssuance do
   def change(changeset, _opts, _context) do
     case get_in(changeset.context, [:ash_authentication, :user]) do
       %User{id: user_id} ->
-        Ash.Changeset.before_action(changeset, fn changeset ->
-          with {:ok, %User{} = user} <- Persistence.lock(user_id),
-               true <- eligible_for_token?(user, changeset) do
-            if password_credential_current?(changeset, user) do
-              changeset
-            else
-              # The password strategy expects token storage to succeed after it has verified a
-              # password. A stale verification is stored as a non-authenticating record instead
-              # of issuing a browser-session token.
-              Ash.Changeset.force_change_attribute(changeset, :purpose, "revocation")
-            end
-          else
-            _ ->
-              Ash.Changeset.add_error(changeset, field: :token, message: "cannot issue a token")
-          end
-        end)
+        Ash.Changeset.before_action(changeset, &guard_issuance(&1, user_id))
 
       _ ->
         changeset
@@ -69,6 +54,23 @@ defmodule Taskman.Accounts.Token.Changes.GuardIssuance do
     case AshAuthentication.Jwt.peek(Ash.Changeset.get_argument(changeset, :token)) do
       {:ok, %{"act" => "complete_setup"}} -> true
       _ -> false
+    end
+  end
+
+  defp guard_issuance(changeset, user_id) do
+    with {:ok, %User{} = user} <- Persistence.lock(user_id),
+         true <- eligible_for_token?(user, changeset) do
+      if password_credential_current?(changeset, user) do
+        changeset
+      else
+        # The password strategy expects token storage to succeed after it has verified a
+        # password. A stale verification is stored as a non-authenticating record instead
+        # of issuing a browser-session token.
+        Ash.Changeset.force_change_attribute(changeset, :purpose, "revocation")
+      end
+    else
+      _ ->
+        Ash.Changeset.add_error(changeset, field: :token, message: "cannot issue a token")
     end
   end
 end

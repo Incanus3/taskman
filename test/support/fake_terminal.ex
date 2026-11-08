@@ -1,4 +1,5 @@
 defmodule Taskman.FakeTerminal do
+  @moduledoc "Provides deterministic terminal input and captures credential-prompt output in tests."
   @behaviour Taskman.Terminal
 
   @responses_key {__MODULE__, :responses}

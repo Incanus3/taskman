@@ -5,12 +5,14 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
   import Taskman.TasksFixtures
   import Taskman.ListsFixtures
 
+  alias Ecto.Adapters.SQL
+
   test "existing Tasks remain direct Project Tasks after the migration" do
     project = project_fixture(%{})
     task = task_fixture(project)
 
     assert %{rows: [[nil]]} =
-             Ecto.Adapters.SQL.query!(Repo, "SELECT list_id FROM tasks WHERE id = $1", [task.id])
+             SQL.query!(Repo, "SELECT list_id FROM tasks WHERE id = $1", [task.id])
   end
 
   test "the database rejects a Task List from another Project" do
@@ -21,7 +23,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(
+            SQL.query!(
               Repo,
               """
               INSERT INTO tasks (project_id, list_id, title, inserted_at, updated_at)
@@ -35,7 +37,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       end
 
     assert error.postgres.code == :foreign_key_violation
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 
   test "the database rejects a parent List from another Project" do
@@ -46,7 +48,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(
+            SQL.query!(
               Repo,
               """
               INSERT INTO lists (project_id, parent_list_id, name, inserted_at, updated_at)
@@ -60,7 +62,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       end
 
     assert error.postgres.code == :foreign_key_violation
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 
   test "the database rejects duplicate root List names case-insensitively" do
@@ -71,7 +73,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(
+            SQL.query!(
               Repo,
               """
               INSERT INTO lists (project_id, parent_list_id, name, inserted_at, updated_at)
@@ -85,7 +87,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       end
 
     assert error.postgres.code == :unique_violation
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 
   test "the database rejects duplicate nested sibling names case-insensitively" do
@@ -97,7 +99,7 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(
+            SQL.query!(
               Repo,
               """
               INSERT INTO lists (project_id, parent_list_id, name, inserted_at, updated_at)
@@ -111,6 +113,6 @@ defmodule Taskman.Repo.Migrations.ListsAndTaskLocationsTest do
       end
 
     assert error.postgres.code == :unique_violation
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 end

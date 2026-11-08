@@ -1,4 +1,6 @@
 defmodule Taskman.Tasks.TaskWithLocation do
+  @moduledoc "A Task paired with its List location path."
+
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.Task
 

@@ -6,10 +6,9 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
   import Taskman.ListsFixtures
   import Taskman.TasksFixtures
 
+  alias Phoenix.LiveView
   alias Taskman.ChangeNotifications.Event
-  alias Taskman.Tasks
-  alias Taskman.Lists
-  alias Taskman.Projects
+  alias Taskman.{Lists, Projects, Tasks}
   alias TaskmanWeb.ProjectLive
   alias TaskmanWeb.ProjectLive.Reconciliation
   alias TaskmanWeb.ProjectLive.Tasks.Editing
@@ -89,7 +88,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
   end
 
   test "detail reconciliation without a selected Task reports unchanged" do
-    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
+    socket = %LiveView.Socket{assigns: %{__changed__: %{}}}
     assert {^socket, :unchanged} = Editing.reconcile(socket, nil)
   end
 
@@ -209,9 +208,9 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     lost = list_fixture(project)
     task = task_fixture(project, lost, %{status: :pending})
 
-    socket = %Phoenix.LiveView.Socket{
+    socket = %LiveView.Socket{
       assigns: %{__changed__: %{}, flash: %{}},
-      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+      private: %{live_temp: %{}, lifecycle: LiveView.Lifecycle.build([])}
     }
 
     {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
@@ -247,8 +246,8 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
   end
 
   defp open_detail(project, task) do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    socket = %LiveView.Socket{
+      private: %{live_temp: %{}, lifecycle: LiveView.Lifecycle.build([])}
     }
 
     {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)

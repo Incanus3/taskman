@@ -4,6 +4,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
 
@@ -12,7 +13,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
     task = task_fixture(project, %{title: "Root"})
 
     assert %{rows: [[nil]]} =
-             Ecto.Adapters.SQL.query!(Repo, "SELECT parent_task_id FROM tasks WHERE id = $1", [
+             SQL.query!(Repo, "SELECT parent_task_id FROM tasks WHERE id = $1", [
                task.id
              ])
   end
@@ -51,7 +52,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
 
   test "database provides the named hierarchy indexes and NO ACTION parent deletion" do
     index_names =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT indexname
@@ -69,7 +70,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
            ]
 
     assert %{rows: [["a"]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT confdeltype::text FROM pg_constraint WHERE conname = $1",
                ["tasks_parent_task_id_project_id_fkey"]
@@ -83,7 +84,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(Repo, "DELETE FROM tasks WHERE id = $1", [parent.id])
+            SQL.query!(Repo, "DELETE FROM tasks WHERE id = $1", [parent.id])
           end,
           mode: :savepoint
         )

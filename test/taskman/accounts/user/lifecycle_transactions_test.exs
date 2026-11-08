@@ -5,9 +5,9 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
   import Swoosh.TestAssertions
 
   alias AshAuthentication.{Argon2Provider, Jwt}
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.Token
-  alias Taskman.Repo
 
   setup :set_swoosh_global
 
@@ -370,7 +370,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
   end
 
   defp with_committed_accounts(fun) do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       Process.put({__MODULE__, :committed_users}, [])
 
       try do
@@ -395,7 +395,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
     subject = AshAuthentication.user_to_subject(user)
     Repo.delete_all(from token in Token, where: token.subject == ^subject)
 
-    case Repo.get(Taskman.Accounts.User, user.id) do
+    case Repo.get(Accounts.User, user.id) do
       nil -> :ok
       persisted_user -> Repo.delete!(persisted_user)
     end
@@ -428,7 +428,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
         Task.async_stream(
           inputs,
           fn input ->
-            :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+            :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
             try do
               send(test_pid, {:lifecycle_attempt_ready, self(), database_backend_pid()})
@@ -437,7 +437,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
                 :redeem -> operation.(input)
               end
             after
-              :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+              :ok = SQL.Sandbox.checkin(Repo)
             end
           end,
           max_concurrency: length(inputs),
@@ -460,7 +460,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
   end
 
   defp database_backend_pid do
-    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    assert %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend_pid
   end
 
@@ -470,7 +470,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
     trigger_name = "#{function_name}_trigger"
     gate_key = System.unique_integer([:positive])
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -488,7 +488,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -498,13 +498,13 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
 
     released? = :atomics.new(1, [])
 
     release_gate = fn ->
       if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end
 
@@ -512,8 +512,8 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       fun.(release_gate)
     after
       release_gate.()
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -524,7 +524,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
     gate_key = System.unique_integer([:positive])
     subject = AshAuthentication.user_to_subject(user)
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -542,7 +542,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -552,13 +552,13 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
 
     released? = :atomics.new(1, [])
 
     release_gate = fn ->
       if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end
 
@@ -566,8 +566,8 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
       fun.(release_gate)
     after
       release_gate.()
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tokens")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tokens")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -580,7 +580,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
     backend_pids = Enum.map(workers, & &1.backend_pid)
 
     assert %{rows: [[waiting_workers]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                SELECT count(*)

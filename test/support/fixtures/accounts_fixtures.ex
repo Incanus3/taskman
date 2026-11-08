@@ -1,4 +1,5 @@
 defmodule Taskman.AccountsFixtures do
+  @moduledoc "Creates eligible account and API-key fixtures for authentication and lifecycle tests."
   alias Taskman.Accounts
 
   @bootstrap_actor %{accounts_bootstrap?: true}

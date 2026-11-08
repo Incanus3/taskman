@@ -4,8 +4,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferences do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [push_event: 3]
 
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.Status
+  alias Taskman.Tasks.{Status, Task}
   alias TaskmanWeb.ProjectLive.Tasks.Listing
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
 

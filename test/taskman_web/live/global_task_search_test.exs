@@ -8,8 +8,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Repo
-  alias Taskman.Tasks
+  alias Taskman.{Repo, Tasks}
   alias TaskmanWeb.GlobalTaskSearch
 
   setup %{conn: conn}, do: {:ok, conn: log_in_user(conn, user_fixture())}

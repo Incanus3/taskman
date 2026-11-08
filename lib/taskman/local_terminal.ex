@@ -1,4 +1,6 @@
 defmodule Taskman.LocalTerminal do
+  @moduledoc "Local terminal input with reversible secret-entry mode."
+
   @behaviour Taskman.Terminal
 
   @impl Taskman.Terminal

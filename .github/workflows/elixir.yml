@@ -60,5 +60,7 @@ jobs:
       run: mix deps.get
     - name: Build assets
       run: mix do assets.setup + assets.build
+    - name: Run Credo
+      run: mix credo
     - name: Run tests
       run: mix test

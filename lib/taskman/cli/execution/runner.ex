@@ -1,12 +1,7 @@
 defmodule Taskman.CLI.Execution.Runner do
   @moduledoc "Dispatch parsed invocations while keeping IO at the CLI boundary."
 
-  alias Taskman.CLI.{Context, Onboarding}
-  alias Taskman.CLI.Commands.Config, as: ConfigCommand
-  alias Taskman.CLI.Commands.Lists
-  alias Taskman.CLI.Commands.Projects
-  alias Taskman.CLI.Commands.Repo
-  alias Taskman.CLI.Commands.Tasks
+  alias Taskman.CLI.{Commands, Context, Onboarding}
   alias Taskman.CLI.Execution.{Invocation, Result}
   alias Taskman.CLI.Presentation.{Completions, Output}
   alias Taskman.CLI.Registry.Command
@@ -29,35 +24,35 @@ defmodule Taskman.CLI.Execution.Runner do
          %Invocation{command: %Command{handler: {:projects, action}}} = invocation,
          runtime_options
        ) do
-    Projects.execute(action, invocation, runtime_options)
+    Commands.Projects.execute(action, invocation, runtime_options)
   end
 
   defp dispatch(
          %Invocation{command: %Command{handler: {:lists, action}}} = invocation,
          runtime_options
        ) do
-    Lists.execute(action, invocation, runtime_options)
+    Commands.Lists.execute(action, invocation, runtime_options)
   end
 
   defp dispatch(
          %Invocation{command: %Command{handler: {:tasks, action}}} = invocation,
          runtime_options
        ) do
-    Tasks.execute(action, invocation, runtime_options)
+    Commands.Tasks.execute(action, invocation, runtime_options)
   end
 
   defp dispatch(
          %Invocation{command: %Command{handler: {:config, action}}} = invocation,
          runtime_options
        ) do
-    ConfigCommand.execute(action, invocation, snapshot(runtime_options))
+    Commands.Config.execute(action, invocation, snapshot(runtime_options))
   end
 
   defp dispatch(
          %Invocation{command: %Command{handler: {:repo, action}}} = invocation,
          runtime_options
        ) do
-    Repo.execute(action, invocation, snapshot(runtime_options))
+    Commands.Repo.execute(action, invocation, snapshot(runtime_options))
   end
 
   defp dispatch(%Invocation{command: %Command{handler: {:completions, :bash}}}, _runtime_options) do

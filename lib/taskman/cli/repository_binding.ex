@@ -51,11 +51,7 @@ defmodule Taskman.CLI.RepositoryBinding do
 
     with :ok <- validate(binding),
          :ok <- ensure_directory(Path.dirname(path)) do
-      with_lock(path, options, fn ->
-        with {:ok, _current} <- read(common_dir) do
-          replace(path, binding, options)
-        end
-      end)
+      with_lock(path, options, fn -> replace_current(common_dir, path, binding, options) end)
     end
   end
 
@@ -70,18 +66,26 @@ defmodule Taskman.CLI.RepositoryBinding do
         :ok
 
       {:ok, %{type: :directory}} ->
-        with_lock(path, options, fn ->
-          case File.rm(path) do
-            result when result in [:ok, {:error, :enoent}] ->
-              sync_after_change(directory, options)
-
-            {:error, _reason} ->
-              error("Could not remove the Taskman repository binding")
-          end
-        end)
+        with_lock(path, options, fn -> remove_binding(path, directory, options) end)
 
       _other ->
         error("Could not access the Taskman repository binding directory")
+    end
+  end
+
+  defp replace_current(common_dir, path, binding, options) do
+    with {:ok, _current} <- read(common_dir) do
+      replace(path, binding, options)
+    end
+  end
+
+  defp remove_binding(path, directory, options) do
+    case File.rm(path) do
+      result when result in [:ok, {:error, :enoent}] ->
+        sync_after_change(directory, options)
+
+      {:error, _reason} ->
+        error("Could not remove the Taskman repository binding")
     end
   end
 
@@ -206,8 +210,7 @@ defmodule Taskman.CLI.RepositoryBinding do
       File.open(stage, [:write, :exclusive, :binary], fn device ->
         with :ok <- File.chmod(stage, 0o600),
              :ok <- IO.binwrite(device, contents),
-             :ok <- :file.sync(device),
-             do: :ok
+             do: :file.sync(device)
       end)
 
     case staged do

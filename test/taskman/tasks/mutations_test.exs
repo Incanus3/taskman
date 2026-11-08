@@ -28,7 +28,7 @@ defmodule Taskman.Tasks.MutationsTest do
       task_read_positions = query_positions(queries, ~s(FROM "tasks"))
 
       assert length(graph_lock_positions) == 1
-      assert length(task_read_positions) >= 1
+      assert task_read_positions != []
       assert hd(graph_lock_positions) < hd(task_read_positions)
       assert Enum.any?(queries, &String.contains?(&1, "begin"))
       assert Enum.any?(queries, &String.contains?(&1, "commit"))
@@ -61,7 +61,9 @@ defmodule Taskman.Tasks.MutationsTest do
             priority: :high,
             due_at: ~N[2026-10-01 12:00:00],
             status: :pending
-          }, actor: Taskman.AccountsFixtures.user_fixture())
+          },
+          actor: Taskman.AccountsFixtures.user_fixture()
+        )
       end)
 
     assert {:ok, updated} = update_result
@@ -250,7 +252,9 @@ defmodule Taskman.Tasks.MutationsTest do
                %{
                  title: "Still owned",
                  project_id: other_project.id
-               }, actor: Taskman.AccountsFixtures.user_fixture())
+               },
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert updated.project_id == project.id
 

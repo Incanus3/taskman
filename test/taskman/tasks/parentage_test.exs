@@ -5,15 +5,18 @@ defmodule Taskman.Tasks.ParentageTest do
   import Taskman.ListsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.Task
 
   setup do
-    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+    existing_user_ids = Repo.all(from u in User, select: u.id)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in User, where: u.id not in ^existing_user_ids)
       end)
     end)
 
@@ -260,7 +263,7 @@ defmodule Taskman.Tasks.ParentageTest do
   end
 
   test "concurrent opposite reparent attempts cannot create a cycle" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       first = task_fixture(project, %{title: "First"})
       second = task_fixture(project, %{title: "Second"})
@@ -269,18 +272,18 @@ defmodule Taskman.Tasks.ParentageTest do
       gate_key = System.unique_integer([:positive])
 
       on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tasks")
-          Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+        Sandbox.unboxed_run(Repo, fn ->
+          SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tasks")
+          SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
 
-          case Repo.get(Taskman.Projects.Project, project.id) do
+          case Repo.get(Project, project.id) do
             nil -> :ok
             persisted_project -> Repo.delete!(persisted_project)
           end
         end)
       end)
 
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         CREATE FUNCTION #{function_name}()
@@ -298,7 +301,7 @@ defmodule Taskman.Tasks.ParentageTest do
         """
       )
 
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         CREATE TRIGGER #{trigger_name}
@@ -312,7 +315,7 @@ defmodule Taskman.Tasks.ParentageTest do
         with_parent_update_gate(gate_key, fn ->
           gate_owner_backend = database_backend_pid()
 
-          supervisor = start_supervised!(Elixir.Task.Supervisor)
+          supervisor = start_supervised!(Task.Supervisor)
           test_pid = self()
           first_worker = start_parent_update_worker(supervisor, project, first, second, test_pid)
           second_worker = start_parent_update_worker(supervisor, project, second, first, test_pid)
@@ -339,8 +342,8 @@ defmodule Taskman.Tasks.ParentageTest do
                match?({:error, %Ecto.Changeset{}}, result)
              end)
 
-      persisted_first = Repo.get!(Task, first.id)
-      persisted_second = Repo.get!(Task, second.id)
+      persisted_first = Repo.get!(Tasks.Task, first.id)
+      persisted_second = Repo.get!(Tasks.Task, second.id)
 
       refute persisted_first.parent_task_id == second.id and
                persisted_second.parent_task_id == first.id
@@ -348,7 +351,7 @@ defmodule Taskman.Tasks.ParentageTest do
   end
 
   test "hierarchy projection holds a shared Project lock until its tree is complete" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       old_root = task_fixture(project, %{title: "Old root"})
       selected = task_fixture(project, %{title: "Selected"}, parent: old_root)
@@ -360,8 +363,8 @@ defmodule Taskman.Tasks.ParentageTest do
       on_exit(fn ->
         :telemetry.detach(handler_id)
 
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          case Repo.get(Taskman.Projects.Project, project.id) do
+        Sandbox.unboxed_run(Repo, fn ->
+          case Repo.get(Project, project.id) do
             nil -> :ok
             persisted_project -> Repo.delete!(persisted_project)
           end
@@ -385,11 +388,11 @@ defmodule Taskman.Tasks.ParentageTest do
           nil
         )
 
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
 
       {:ok, hierarchy_pid} =
-        Elixir.Task.Supervisor.start_child(supervisor, fn ->
-          :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        Task.Supervisor.start_child(supervisor, fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
 
           try do
             send(test_pid, {:hierarchy_ready, self()})
@@ -400,7 +403,7 @@ defmodule Taskman.Tasks.ParentageTest do
                 send(test_pid, {:hierarchy_finished, self(), result})
             end
           after
-            :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+            :ok = Sandbox.checkin(Repo)
           end
         end)
 
@@ -411,7 +414,7 @@ defmodule Taskman.Tasks.ParentageTest do
 
       error =
         assert_raise Postgrex.Error, fn ->
-          Ecto.Adapters.SQL.query!(
+          SQL.query!(
             Repo,
             "SELECT id FROM projects WHERE id = $1 FOR UPDATE NOWAIT",
             [project.id]
@@ -440,7 +443,7 @@ defmodule Taskman.Tasks.ParentageTest do
   end
 
   test "parent update gate releases its session lock after a failure" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       gate_key = System.unique_integer([:positive])
 
       try do
@@ -450,15 +453,15 @@ defmodule Taskman.Tasks.ParentageTest do
 
         assert parent_update_gate_available?(gate_key)
       after
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end)
   end
 
   defp start_parent_update_worker(supervisor, project, task, parent, test_pid) do
     {:ok, pid} =
-      Elixir.Task.Supervisor.start_child(supervisor, fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      Task.Supervisor.start_child(supervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
 
         try do
           send(test_pid, {:parent_update_ready, self(), database_backend_pid()})
@@ -474,7 +477,7 @@ defmodule Taskman.Tasks.ParentageTest do
               send(test_pid, {:parent_update_finished, self(), result})
           end
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = Sandbox.checkin(Repo)
         end
       end)
 
@@ -531,28 +534,28 @@ defmodule Taskman.Tasks.ParentageTest do
   end
 
   defp database_backend_pid do
-    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    assert %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend_pid
   end
 
   defp with_parent_update_gate(gate_key, fun) do
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
 
     try do
       fun.()
     after
       assert %{rows: [[true]]} =
-               Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+               SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
     end
   end
 
   defp parent_update_gate_available?(gate_key) do
-    supervisor = start_supervised!(Elixir.Task.Supervisor)
+    supervisor = start_supervised!(Task.Supervisor)
     test_pid = self()
 
     {:ok, pid} =
-      Elixir.Task.Supervisor.start_child(supervisor, fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      Task.Supervisor.start_child(supervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
 
         try do
           send(test_pid, {:parent_update_gate_lock_ready, self()})
@@ -560,11 +563,11 @@ defmodule Taskman.Tasks.ParentageTest do
           receive do
             :attempt_parent_update_gate_lock ->
               %{rows: [[available?]]} =
-                Ecto.Adapters.SQL.query!(Repo, "SELECT pg_try_advisory_lock($1)", [gate_key])
+                SQL.query!(Repo, "SELECT pg_try_advisory_lock($1)", [gate_key])
 
               if available? do
                 assert %{rows: [[true]]} =
-                         Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [
+                         SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [
                            gate_key
                          ])
               end
@@ -572,7 +575,7 @@ defmodule Taskman.Tasks.ParentageTest do
               send(test_pid, {:parent_update_gate_lock_available, self(), available?})
           end
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = Sandbox.checkin(Repo)
         end
       end)
 
@@ -632,7 +635,7 @@ defmodule Taskman.Tasks.ParentageTest do
 
   defp parent_update_blocked_by?(blocked_backend_pid, blocker_backend_pid) do
     assert %{rows: [[blocked?]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT $2::integer = ANY(pg_blocking_pids($1::integer))",
                [blocked_backend_pid, blocker_backend_pid]

@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.User.Senders.SendPasswordReset do
+  @moduledoc "Delivers password reset tokens."
+
   use AshAuthentication.Sender
 
   alias Taskman.Accounts

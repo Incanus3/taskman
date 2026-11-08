@@ -8,8 +8,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Tasks
-  alias Taskman.Lists
+  alias Taskman.{Lists, Tasks}
 
   setup %{conn: conn} do
     {:ok, conn: log_in_user(conn, user_fixture())}

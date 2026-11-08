@@ -72,6 +72,24 @@ workflow in the adapter when it is action-specific. Delegate storage-shaped oper
 to resource-specific persistence modules, and use domain wrappers only when they add meaningful
 behavior.
 
+## Elixir module references
+
+Prefer single-segment module references such as `Event` or `BlockingPersistence` in code,
+including typespecs and tests. Normally use at most two segments when the extra namespace improves
+clarity, and alias longer module references. When a short name needs more context, retain one
+more namespace segment from the right, such as `LiveView.Socket`, rather than joining segments
+into an alias such as `LiveViewSocket`. Use `alias ..., as: ...` when needed to avoid name
+collisions while keeping the reference descriptive. Full paths remain appropriate in module
+declarations and alias declarations.
+
+When declaring aliases for siblings, prefer the grouped form. Wrap long groups across lines
+rather than repeating the namespace in separate declarations.
+
+When a parent namespace is already aliased, use it consistently for related modules instead
+of adding separate aliases for its children. Retain an additional segment when needed to
+preserve that shared namespace, such as `Authentication.Overrides.Default` alongside
+`Authentication.Router` and `Authentication.LiveSession`.
+
 ## Current technology direction
 
 ### Elixir and Erlang versions
@@ -225,6 +243,19 @@ is introduced.
 This is not a prerequisite to rewrite all existing shell code. The
 [PostgreSQL native configuration architecture](../specs/2026-10-07-shared-postgresql-design.md#native-configuration-architecture) implements
 the bounded native configuration workflow; the general preference also applies to future ops work.
+
+## Static analysis
+
+Run `mix credo` to check the default Credo rules across application and test code. The
+minimal `.credo.exs` enables strict mode so lower-priority findings, including alias ordering,
+also fail the check. Keep the upstream defaults and thresholds; do not disable checks or
+suppress individual findings merely to obtain a clean result.
+
+`mix precommit` runs Credo after formatting and before tests. Elixir CI also runs Credo as a
+blocking step. Credo reports findings without rewriting source; `mix format` remains the
+formatter and does not sort aliases. Run formatting through Mix so project and dependency
+DSL options apply; standalone `Code.format_string!/2` without those options can add unnecessary
+parentheses to macros such as Ecto's `from/2`.
 
 ## Verification expectations
 

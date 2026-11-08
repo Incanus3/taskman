@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.User.Senders.SendInvitation do
+  @moduledoc "Delivers account setup invitations."
+
   use AshAuthentication.Sender
 
   alias Taskman.Accounts

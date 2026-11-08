@@ -4,10 +4,10 @@ defmodule Taskman.Tasks.Activity.QueriesTest do
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks
-  alias Taskman.Tasks.Activity
+  alias Taskman.Tasks.{Activity, Comment}
   alias Taskman.Tasks.Activity.Event
-  alias Taskman.Tasks.Comment
 
   setup do
     project = project_fixture(%{})
@@ -87,7 +87,7 @@ defmodule Taskman.Tasks.Activity.QueriesTest do
   } do
     {:ok, {:ok, _}} = Repo.transaction(fn -> Activity.record_task(actor, nil, task, []) end)
 
-    Ecto.Adapters.SQL.query!(Repo, "UPDATE users SET email = $1 WHERE id = $2", [
+    SQL.query!(Repo, "UPDATE users SET email = $1 WHERE id = $2", [
       "renamed@example.com",
       Ecto.UUID.dump!(actor.id)
     ])
@@ -98,7 +98,7 @@ defmodule Taskman.Tasks.Activity.QueriesTest do
     assert actor_id == actor.id
     stored = Repo.one!(Event)
     refute Jason.encode!(stored.context) =~ "@"
-    Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
+    SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
 
     assert {:ok, [%{change: %{actor: %{user_id: nil, login: "Deleted user"}}}]} =
              Tasks.list_activity(project, task)

@@ -63,10 +63,10 @@ defmodule Taskman.CLI.Config.Document do
          fragment: nil,
          userinfo: nil
        }}
-      when scheme in ["http", "https"] and is_binary(host) and host != "" and
-             (is_nil(port) or (is_integer(port) and port in 1..65_535)) and
-             path in [nil, "", "/"] ->
-        if String.trim(url) == url, do: :ok, else: invalid_url()
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        if valid_port?(port) and path in [nil, "", "/"] and String.trim(url) == url,
+          do: :ok,
+          else: invalid_url()
 
       _other ->
         invalid_url()
@@ -74,6 +74,9 @@ defmodule Taskman.CLI.Config.Document do
   end
 
   def validate_url(_url), do: invalid_url()
+
+  defp valid_port?(nil), do: true
+  defp valid_port?(port), do: is_integer(port) and port in 1..65_535
 
   @doc "Validate a complete server-token shape without displaying the credential."
   @spec validate_api_key(term()) :: :ok | local_error()

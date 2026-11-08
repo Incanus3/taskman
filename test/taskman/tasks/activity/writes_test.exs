@@ -6,8 +6,11 @@ defmodule Taskman.Tasks.Activity.WritesTest do
   import Taskman.TasksFixtures
   import Taskman.ListsFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Taskman.Accounts.User
   alias Taskman.Tasks
   alias Taskman.Tasks.Activity.Event
+  alias Taskman.Tasks.{Conflict, Writes}
 
   setup do
     %{project: project_fixture(%{name: "Work"}), actor: user_fixture()}
@@ -50,7 +53,9 @@ defmodule Taskman.Tasks.Activity.WritesTest do
                  status: "in_progress",
                  priority: "high",
                  due_at: "2030-02-03T04:05:06"
-               }, actor: actor)
+               },
+               actor: actor
+             )
 
     assert {:ok, moved} = Tasks.move_task(project, updated, list, actor: actor)
     assert moved.lock_version == task.lock_version + 2
@@ -88,7 +93,9 @@ defmodule Taskman.Tasks.Activity.WritesTest do
              Tasks.update_task(
                project,
                described,
-               %{description: "More private prose", priority: :high}, actor: actor)
+               %{description: "More private prose", priority: :high},
+               actor: actor
+             )
 
     assert mixed.description == "More private prose"
     assert [%{field: "priority"}] = field_changes(project, mixed)
@@ -102,7 +109,7 @@ defmodule Taskman.Tasks.Activity.WritesTest do
     task = task_fixture(project)
     other = task_fixture(project)
 
-    Repo.update_all(from(u in Taskman.Accounts.User, where: u.id == ^actor.id),
+    Repo.update_all(from(u in User, where: u.id == ^actor.id),
       set: [status: :disabled]
     )
 
@@ -132,7 +139,7 @@ defmodule Taskman.Tasks.Activity.WritesTest do
     assert {:ok, converged} = Tasks.update_task(project, task, %{title: "After"}, actor: actor)
     assert converged.lock_version == titled.lock_version
 
-    assert {:error, %Taskman.Tasks.Conflict{}} =
+    assert {:error, %Conflict{}} =
              Tasks.update_task(project, task, %{title: "Conflicting"}, actor: actor)
 
     assert {:error, %Ecto.Changeset{}} =
@@ -152,7 +159,7 @@ defmodule Taskman.Tasks.Activity.WritesTest do
   } do
     task = task_fixture(project, %{title: "Before"})
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE task_activity_events ADD CONSTRAINT reject_test_activity CHECK (field IS DISTINCT FROM 'title')"
     )
@@ -208,7 +215,7 @@ defmodule Taskman.Tasks.Activity.WritesTest do
   } do
     parent = task_fixture(project)
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE task_activity_events ADD CONSTRAINT reject_test_creation CHECK (kind IS DISTINCT FROM 'task_created') NOT VALID"
     )
@@ -225,7 +232,7 @@ defmodule Taskman.Tasks.Activity.WritesTest do
     task = task_fixture(project)
 
     assert {:error, :rejected} =
-             Taskman.Tasks.Writes.run(actor, fn persisted_actor ->
+             Writes.run(actor, fn persisted_actor ->
                assert persisted_actor.id == actor.id
                task |> Ecto.Changeset.change(title: "Temporary") |> Repo.update!()
                {:error, :rejected}

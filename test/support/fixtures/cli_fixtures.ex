@@ -2,6 +2,7 @@ defmodule Taskman.CLI.Fixtures do
   @moduledoc "Disposable CLI configuration and Git fixtures."
 
   alias Taskman.CLI.Config.Document
+  alias Taskman.CLI.Context
 
   def activity_entry(overrides \\ %{}) do
     reference = %{"id" => 42, "project_id" => 7, "project_name" => "Demo", "title" => "Review"}
@@ -46,7 +47,7 @@ defmodule Taskman.CLI.Fixtures do
 
   def resolved_context(overrides \\ %{}) do
     struct(
-      Taskman.CLI.Context,
+      Context,
       Map.merge(
         %{
           host: "personal",

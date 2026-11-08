@@ -5,10 +5,13 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.ChangeNotifications
-  alias Taskman.ChangeNotifications.Event, as: Notification
-  alias Taskman.Tasks
-  alias Taskman.Tasks.Activity.Event
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.{ChangeNotifications, Tasks}
+  alias Taskman.Projects.Project
+  alias Taskman.Tasks.Activity.{Event, Persistence}
+  alias Taskman.Tasks.BlockingPersistence
 
   test "same actor serializes add and remove before a fresh transition after cancellation" do
     with_state(fn project, source, target, actor, _other, supervisor ->
@@ -23,7 +26,7 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
         worker(supervisor, fn -> Tasks.remove_block(project, source, target, actor: actor) end)
 
       assert_blocked(second, first)
-      refute_receive %Notification{entity: :activity}, 0
+      refute_receive %ChangeNotifications.Event{entity: :activity}, 0
       released_at = DateTime.utc_now()
       send(first.pid, :release_history)
       assert {:ok, _} = result(first)
@@ -58,7 +61,7 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
 
       assert_blocked(second, first)
       assert block_events(source) == []
-      refute_receive %Notification{entity: :activity}, 0
+      refute_receive %ChangeNotifications.Event{entity: :activity}, 0
       released_at = DateTime.utc_now()
       send(first.pid, :release_history)
       assert {:ok, _} = result(first)
@@ -156,7 +159,7 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
 
   test "history failure rolls back the graph before a queued writer validates it" do
     with_state(fn project, source, target, actor, other, supervisor ->
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "ALTER TABLE task_activity_events ADD CONSTRAINT reject_queued_relationship CHECK (actor_user_id <> '#{actor.id}'::uuid) NOT VALID"
       )
@@ -183,16 +186,16 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
 
         assert_blocked(second, first)
         assert block_events(source) == []
-        refute_receive %Notification{entity: :activity}, 0
+        refute_receive %ChangeNotifications.Event{entity: :activity}, 0
         send(first.pid, :release_history)
         assert :history_rejected = result(first)
         assert {:ok, _} = result(second)
         assert [event] = block_events(source)
         assert event.actor_user_id == other.id
         assert_event_tasks(project, event, [source, target])
-        assert Taskman.Tasks.BlockingPersistence.edge?(source.id, target.id)
+        assert BlockingPersistence.edge?(source.id, target.id)
       after
-        Ecto.Adapters.SQL.query!(
+        SQL.query!(
           Repo,
           "ALTER TABLE task_activity_events DROP CONSTRAINT reject_queued_relationship"
         )
@@ -200,23 +203,25 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
     end)
   end
 
+  defp cleanup_state(project, actor_ids) do
+    Sandbox.unboxed_run(Repo, fn ->
+      Repo.delete_all(from p in Project, where: p.id == ^project.id)
+      Repo.delete_all(from u in User, where: u.id in ^actor_ids)
+    end)
+  end
+
   defp with_state(fun) do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       actor = user_fixture()
       other = user_fixture()
       source = task_fixture(project, %{}, actor: actor)
       target = task_fixture(project, %{}, actor: actor)
 
-      on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          Repo.delete_all(from p in Taskman.Projects.Project, where: p.id == ^project.id)
-          Repo.delete_all(from u in Taskman.Accounts.User, where: u.id in ^[actor.id, other.id])
-        end)
-      end)
+      on_exit(fn -> cleanup_state(project, [actor.id, other.id]) end)
 
       :ok = ChangeNotifications.subscribe_project(project)
-      fun.(project, source, target, actor, other, start_supervised!(Elixir.Task.Supervisor))
+      fun.(project, source, target, actor, other, start_supervised!(Task.Supervisor))
     end)
   end
 
@@ -229,7 +234,7 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
       )
 
   defp assert_event_tasks(project, event, tasks) do
-    assert MapSet.new(Taskman.Tasks.Activity.Persistence.event_tasks(event.id)) ==
+    assert MapSet.new(Persistence.event_tasks(event.id)) ==
              MapSet.new(Enum.map(tasks, &{project.id, &1.id}))
   end
 
@@ -237,19 +242,19 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
     test_pid = self()
 
     {:ok, pid} =
-      Elixir.Task.Supervisor.start_child(supervisor, fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      Task.Supervisor.start_child(supervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
         Process.put(:test_pid, test_pid)
 
         try do
-          %{rows: [[backend]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+          %{rows: [[backend]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
           send(test_pid, {:backend, self(), backend})
 
           receive do
             :run -> send(test_pid, {:result, self(), fun.()})
           end
         after
-          Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          Sandbox.checkin(Repo)
         end
       end)
 
@@ -305,7 +310,7 @@ defmodule Taskman.Tasks.Activity.RelationshipConcurrencyTest do
 
   defp wait_blocked(backend, owner, deadline) do
     %{rows: [[blockers]]} =
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend])
+      SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend])
 
     cond do
       owner in blockers -> :ok

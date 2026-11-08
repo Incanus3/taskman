@@ -2,8 +2,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
   @moduledoc "Routes Markdown snapshots to the currently authorized description owner."
   import Phoenix.Component, only: [assign: 3]
 
+  alias Phoenix.LiveView
+  alias Taskman.ChangeNotifications.Event
   alias TaskmanWeb.ProjectLive.Recovery
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Comments, Creation, Editing}
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Comments, Creation, Description, Editing}
 
   @type context :: {:new, pos_integer()} | {:edit, pos_integer(), pos_integer()}
   @type params :: %{optional(String.t()) => term()}
@@ -11,7 +13,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
           {:submit, params()}
           | {:departure, {String.t(), params()}}
           | {:route, params(), String.t()}
-          | {:reconcile, Taskman.ChangeNotifications.Event.t()}
+          | {:reconcile, Event.t()}
   @type capture_metadata :: %{markdown: String.t(), dirty: boolean()}
   @type pending_capture :: %{
           ref: String.t(),
@@ -42,12 +44,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
                optional(:html) => String.t()
              }}
   @type capture_result ::
-          {:ready, Phoenix.LiveView.Socket.t()} | {:pending, Phoenix.LiveView.Socket.t()}
+          {:ready, LiveView.Socket.t()} | {:pending, LiveView.Socket.t()}
   @type completion_result ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
-          | {:captured, Phoenix.LiveView.Socket.t(), capture_purpose(), String.t(), boolean()}
+          {:noreply, LiveView.Socket.t()}
+          | {:captured, LiveView.Socket.t(), capture_purpose(), String.t(), boolean()}
 
   defmodule State do
+    @moduledoc "Editor identity and pending browser snapshot state."
+
     defstruct generation: 0,
               context: nil,
               editor_id: nil,
@@ -59,13 +63,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
 
     @type t :: %__MODULE__{
             generation: non_neg_integer(),
-            context: TaskmanWeb.ProjectLive.Tasks.Description.context() | nil,
+            context: Description.context() | nil,
             editor_id: String.t() | nil,
             initial_value: String.t(),
             edited?: boolean(),
-            pending_capture: TaskmanWeb.ProjectLive.Tasks.Description.pending_capture() | nil,
+            pending_capture: Description.pending_capture() | nil,
             route_ready: String.t() | nil,
-            refresh_event: Taskman.ChangeNotifications.Event.t() | nil
+            refresh_event: Event.t() | nil
           }
   end
 
@@ -119,7 +123,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
   starts a capture. An existing reconciliation capture can adopt a submit,
   departure or route purpose while retaining its refresh event.
   """
-  @spec capture(Phoenix.LiveView.Socket.t(), capture_purpose()) :: capture_result()
+  @spec capture(LiveView.Socket.t(), capture_purpose()) :: capture_result()
   def capture(socket, purpose) do
     state = socket.assigns.description
 
@@ -129,30 +133,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
         {:ready, socket}
 
       state.pending_capture ->
-        case {state.pending_capture.purpose, purpose} do
-          {{:reconcile, event}, {kind, _}} when kind in [:departure, :submit] ->
-            pending = %{state.pending_capture | purpose: purpose}
-
-            {:pending,
-             assign(socket, :description, %{
-               state
-               | pending_capture: pending,
-                 refresh_event: state.refresh_event || event
-             })}
-
-          {{:reconcile, event}, {:route, _, _}} ->
-            pending = %{state.pending_capture | purpose: purpose}
-
-            {:pending,
-             assign(socket, :description, %{
-               state
-               | pending_capture: pending,
-                 refresh_event: state.refresh_event || event
-             })}
-
-          _ ->
-            {:pending, socket}
-        end
+        adopt_pending_capture(socket, state, purpose)
 
       true ->
         ref = Integer.to_string(System.unique_integer([:positive, :monotonic]))
@@ -214,7 +195,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
   for edit departures and routes. The `:captured` result returns the retained
   purpose, Markdown and effective dirty flag for the caller to continue.
   """
-  @spec handle_info(term(), Phoenix.LiveView.Socket.t()) :: completion_result()
+  @spec handle_info(term(), LiveView.Socket.t()) :: completion_result()
   def handle_info(
         {:description_comment_captured, %{editor_id: id, ref: ref, draft: draft}},
         socket
@@ -276,9 +257,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
         pending = %{state.pending_capture | metadata: %{markdown: markdown, dirty: dirty}}
         finish_capture(assign(socket, :description, %{state | pending_capture: pending}))
 
-      (dirty or state.edited?) and authorized?(socket, state.context) and
-        not Recovery.blocked?(socket) and not socket.assigns.workspace.location_not_found? and
-          markdown != current_value(socket, state.context) ->
+      description_changed?(socket, state, markdown, dirty) ->
         socket = assign(socket, :description, %{state | edited?: true})
 
         socket =
@@ -322,6 +301,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
   end
 
   defp comment_required?({:edit, _, _}, {:departure, _}), do: true
+
   defp comment_required?({:edit, _, _}, {:route, _, _}), do: true
   defp comment_required?(_, _), do: false
 
@@ -381,4 +361,37 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
 
   defp current_value(socket, {:edit, _, _}),
     do: socket.assigns.editing.autosave.form[:description].value || ""
+
+  defp adopt_pending_capture(socket, state, purpose) do
+    case {state.pending_capture.purpose, purpose} do
+      {{:reconcile, event}, {kind, _}} when kind in [:departure, :submit] ->
+        pending = %{state.pending_capture | purpose: purpose}
+
+        {:pending,
+         assign(socket, :description, %{
+           state
+           | pending_capture: pending,
+             refresh_event: state.refresh_event || event
+         })}
+
+      {{:reconcile, event}, {:route, _, _}} ->
+        pending = %{state.pending_capture | purpose: purpose}
+
+        {:pending,
+         assign(socket, :description, %{
+           state
+           | pending_capture: pending,
+             refresh_event: state.refresh_event || event
+         })}
+
+      _ ->
+        {:pending, socket}
+    end
+  end
+
+  defp description_changed?(socket, state, markdown, dirty) do
+    (dirty or state.edited?) and authorized?(socket, state.context) and
+      not Recovery.blocked?(socket) and not socket.assigns.workspace.location_not_found? and
+      markdown != current_value(socket, state.context)
+  end
 end

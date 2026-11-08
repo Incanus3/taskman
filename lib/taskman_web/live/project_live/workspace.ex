@@ -2,11 +2,8 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   import Phoenix.Component, only: [assign: 3, update: 3]
   import Phoenix.LiveView, only: [connected?: 1, stream: 4, push_patch: 2]
 
-  alias Taskman.ChangeNotifications
+  alias Taskman.{ChangeNotifications, Lists, Projects, Tasks}
   alias Taskman.ChangeNotifications.Event
-  alias Taskman.Lists
-  alias Taskman.Projects
-  alias Taskman.Tasks
   alias Taskman.Tasks.{Status, Task}
 
   alias TaskmanWeb.ProjectLive.{
@@ -209,16 +206,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   def resolve_location(%{"project_id" => project_id} = params) do
     case Projects.get_project(project_id) do
       %Project{} = project ->
-        case Map.fetch(params, "list_id") do
-          :error ->
-            {:ok, project, nil}
-
-          {:ok, list_id} ->
-            case Lists.get_list_for_project(project, list_id) do
-              %TaskList{} = task_list -> {:ok, project, task_list}
-              nil -> {:error, :location_not_found, project}
-            end
-        end
+        resolve_project_location(project, Map.fetch(params, "list_id"))
 
       nil ->
         {:error, :project_not_found}
@@ -289,7 +277,14 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         lock_version: version
       })
       when operation in [:created, :updated, :moved] and is_integer(id) and id > 0 and
-             is_list(fields) and (is_nil(version) or (is_integer(version) and version >= 0)) do
+             is_list(fields) do
+    observe_valid_task_event(socket, operation, project_id, list_id, status, fields, version)
+  end
+
+  def observe_task_event(socket, _event), do: socket
+
+  defp observe_valid_task_event(socket, operation, project_id, list_id, status, fields, version)
+       when is_nil(version) or (is_integer(version) and version >= 0) do
     relevant? = operation in [:created, :moved] or Enum.any?(fields, &(&1 in [:status, :list_id]))
 
     if relevant? and Enum.all?(fields, &is_atom/1),
@@ -297,7 +292,16 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
       else: socket
   end
 
-  def observe_task_event(socket, _event), do: socket
+  defp observe_valid_task_event(
+         socket,
+         _operation,
+         _project_id,
+         _list_id,
+         _status,
+         _fields,
+         _version
+       ),
+       do: socket
 
   defp observe_snapshot(socket, project_id, list_id, status) do
     workspace = socket.assigns.workspace
@@ -747,31 +751,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     if project_id(socket.assigns.workspace.selected_project) == event_project_id do
       case Enum.find(projects, &(&1.id == event_project_id)) do
         %Project{} = project ->
-          task_lists = Map.get(lists_by_project, event_project_id, [])
-          previous_list = socket.assigns.workspace.selected_list
-          selected_list = canonical_selected_list(previous_list, task_lists)
-          location_not_found? = match?(%TaskList{}, previous_list) and is_nil(selected_list)
-          location_path = Lists.path_for(task_lists, selected_list)
-
-          workspace =
-            if location_not_found? do
-              Workspace.State.location_not_found(socket.assigns.workspace, project)
-            else
-              Workspace.State.select_location(
-                socket.assigns.workspace,
-                project,
-                selected_list,
-                socket.assigns.workspace.include_children?,
-                location_path
-              )
-            end
-
-          outcome =
-            if location_not_found?,
-              do: {:location_missing, task_lists},
-              else: {:location_changed, task_lists}
-
-          {assign_workspace(socket, workspace), outcome}
+          reconcile_project_location(socket, event_project_id, project, lists_by_project)
 
         nil ->
           {socket, :unchanged}
@@ -943,19 +923,17 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           ChangeNotifications.unsubscribe_project(subscribed_project_id)
         end
 
-        case desired_project_id do
-          nil ->
-            update_workspace(socket, &Workspace.State.put_subscription(&1, nil))
+        subscribe_desired_project(socket, desired_project_id)
+    end
+  end
 
-          project_id ->
-            case ChangeNotifications.subscribe_project(project_id) do
-              :ok ->
-                update_workspace(socket, &Workspace.State.put_subscription(&1, project_id))
+  defp subscribe_desired_project(socket, nil),
+    do: update_workspace(socket, &Workspace.State.put_subscription(&1, nil))
 
-              {:error, _reason} ->
-                update_workspace(socket, &Workspace.State.put_subscription(&1, nil))
-            end
-        end
+  defp subscribe_desired_project(socket, project_id) do
+    case ChangeNotifications.subscribe_project(project_id) do
+      :ok -> update_workspace(socket, &Workspace.State.put_subscription(&1, project_id))
+      {:error, _reason} -> update_workspace(socket, &Workspace.State.put_subscription(&1, nil))
     end
   end
 
@@ -978,5 +956,42 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   defp update_workspace(socket, transition) do
     assign_workspace(socket, transition.(socket.assigns.workspace))
+  end
+
+  defp resolve_project_location(project, :error), do: {:ok, project, nil}
+
+  defp resolve_project_location(project, {:ok, list_id}) do
+    case Lists.get_list_for_project(project, list_id) do
+      %TaskList{} = task_list -> {:ok, project, task_list}
+      nil -> {:error, :location_not_found, project}
+    end
+  end
+
+  defp reconcile_project_location(socket, event_project_id, project, lists_by_project) do
+    task_lists = Map.get(lists_by_project, event_project_id, [])
+    previous_list = socket.assigns.workspace.selected_list
+    selected_list = canonical_selected_list(previous_list, task_lists)
+    location_not_found? = match?(%TaskList{}, previous_list) and is_nil(selected_list)
+    location_path = Lists.path_for(task_lists, selected_list)
+
+    workspace =
+      if location_not_found? do
+        Workspace.State.location_not_found(socket.assigns.workspace, project)
+      else
+        Workspace.State.select_location(
+          socket.assigns.workspace,
+          project,
+          selected_list,
+          socket.assigns.workspace.include_children?,
+          location_path
+        )
+      end
+
+    outcome =
+      if location_not_found?,
+        do: {:location_missing, task_lists},
+        else: {:location_changed, task_lists}
+
+    {assign_workspace(socket, workspace), outcome}
   end
 end

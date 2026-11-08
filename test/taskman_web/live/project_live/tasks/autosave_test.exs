@@ -4,6 +4,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Taskman.Accounts.User
   alias Taskman.{Repo, Tasks}
   alias TaskmanWeb.ProjectLive.Tasks.Autosave
 
@@ -30,7 +32,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
     assert {:schedule, pending, ^task, _, {:autosave_task_field, id, "title", revision}} =
              Autosave.change(autosave, project, task, %{"title" => "After"}, "title")
 
-    Repo.update_all(from(u in Taskman.Accounts.User, where: u.id == ^actor.id),
+    Repo.update_all(from(u in User, where: u.id == ^actor.id),
       set: [status: :disabled]
     )
 
@@ -259,9 +261,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
   end
 
   test "flush reports aggregate failure while retaining successful partial writes" do
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
     )
@@ -308,9 +310,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
   end
 
   test "persistence failure takes precedence over an invalid complete form" do
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
     )
@@ -650,9 +652,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
   end
 
   test "a restart persistence failure marks only the failed field" do
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
     )

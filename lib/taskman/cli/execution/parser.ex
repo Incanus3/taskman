@@ -1,9 +1,9 @@
 defmodule Taskman.CLI.Execution.Parser do
   @moduledoc "Parse command-line tokens against the declarative CLI registry."
 
+  alias Taskman.CLI.Config.Document
   alias Taskman.CLI.Execution.Invocation
   alias Taskman.CLI.Registry
-  alias Taskman.CLI.Registry.{Command, Option}
 
   @type parse_result ::
           {:ok, Invocation.t()}
@@ -47,7 +47,7 @@ defmodule Taskman.CLI.Execution.Parser do
 
   defp parse_command(tokens, path, cli_host, json?) do
     case Registry.find(path) do
-      {:ok, %Command{} = command} ->
+      {:ok, %Registry.Command{} = command} ->
         command_tokens = Enum.drop(tokens, length(path))
         global_options = globals(cli_host, json?)
 
@@ -72,7 +72,7 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
-  defp parse_tokens(%Command{} = command, tokens, path) do
+  defp parse_tokens(%Registry.Command{} = command, tokens, path) do
     options_by_name = Map.new(command.options, &{normalize_option(&1.long), &1})
     parse_tokens(tokens, options_by_name, %{}, [], path)
   end
@@ -83,37 +83,7 @@ defmodule Taskman.CLI.Execution.Parser do
   defp parse_tokens([token | rest], options_by_name, options, positional, path)
        when is_binary(token) do
     if String.starts_with?(token, "--") do
-      {option_name, inline_value} = split_long_option(token)
-
-      case Map.get(options_by_name, option_name) do
-        nil ->
-          {:error, "Unknown option --#{option_name}", path}
-
-        %Option{type: :boolean} = option ->
-          if inline_value != nil do
-            {:error, "Option #{option.long} does not take a value", path}
-          else
-            parse_tokens(
-              rest,
-              options_by_name,
-              Map.put(options, option.name, true),
-              positional,
-              path
-            )
-          end
-
-        %Option{} = option ->
-          with {:ok, raw_value, remaining} <- option_value(option, inline_value, rest, path),
-               {:ok, value} <- cast_option_value(option, raw_value, path) do
-            parse_tokens(
-              remaining,
-              options_by_name,
-              put_option(options, option, value),
-              positional,
-              path
-            )
-          end
-      end
+      parse_long_option(token, rest, options_by_name, options, positional, path)
     else
       parse_tokens(rest, options_by_name, options, [token | positional], path)
     end
@@ -123,7 +93,41 @@ defmodule Taskman.CLI.Execution.Parser do
     {:error, "Invalid argument #{inspect(token)}", path}
   end
 
-  defp option_value(%Option{} = option, inline_value, rest, path) do
+  defp parse_long_option(token, rest, options_by_name, options, positional, path) do
+    {option_name, inline_value} = split_long_option(token)
+
+    case Map.get(options_by_name, option_name) do
+      nil ->
+        {:error, "Unknown option --#{option_name}", path}
+
+      %Registry.Option{type: :boolean} = option ->
+        if inline_value != nil do
+          {:error, "Option #{option.long} does not take a value", path}
+        else
+          parse_tokens(
+            rest,
+            options_by_name,
+            Map.put(options, option.name, true),
+            positional,
+            path
+          )
+        end
+
+      %Registry.Option{} = option ->
+        with {:ok, raw_value, remaining} <- option_value(option, inline_value, rest, path),
+             {:ok, value} <- cast_option_value(option, raw_value, path) do
+          parse_tokens(
+            remaining,
+            options_by_name,
+            put_option(options, option, value),
+            positional,
+            path
+          )
+        end
+    end
+  end
+
+  defp option_value(%Registry.Option{} = option, inline_value, rest, path) do
     cond do
       is_binary(inline_value) ->
         {:ok, inline_value, rest}
@@ -139,7 +143,7 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
-  defp cast_option_value(%Option{type: :string, values: values} = option, value, path) do
+  defp cast_option_value(%Registry.Option{type: :string, values: values} = option, value, path) do
     if values == [] or value in values do
       {:ok, value}
     else
@@ -149,7 +153,7 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
-  defp cast_option_value(%Option{type: :positive_integer_csv} = option, value, path) do
+  defp cast_option_value(%Registry.Option{type: :positive_integer_csv} = option, value, path) do
     ids = String.split(value, ",", trim: false)
 
     parsed =
@@ -172,7 +176,7 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
-  defp cast_option_value(%Option{type: type} = option, value, path)
+  defp cast_option_value(%Registry.Option{type: type} = option, value, path)
        when type in [:integer, :positive_integer] do
     case Integer.parse(value) do
       {integer, ""} when type == :integer -> {:ok, integer}
@@ -181,35 +185,36 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
-  defp cast_option_value(%Option{} = option, _value, path) do
+  defp cast_option_value(%Registry.Option{} = option, _value, path) do
     {:error, "Unsupported option type #{inspect(option.type)} for #{option.long}", path}
   end
 
-  defp put_option(options, %Option{name: name, repeatable?: true}, value) do
+  defp put_option(options, %Registry.Option{name: name, repeatable?: true}, value) do
     Map.update(options, name, [value], &(&1 ++ [value]))
   end
 
-  defp put_option(options, %Option{name: name}, value), do: Map.put(options, name, value)
+  defp put_option(options, %Registry.Option{name: name}, value), do: Map.put(options, name, value)
 
-  defp parse_arguments(%Command{arguments: arguments}, positional, path) do
+  defp parse_arguments(%Registry.Command{arguments: arguments}, positional, path) do
     if length(arguments) != length(positional) do
       {:error, "Expected #{length(arguments)} argument(s), got #{length(positional)}", path}
     else
       arguments
       |> Enum.zip(positional)
-      |> Enum.reduce_while({:ok, %{}}, fn {argument, raw_value}, {:ok, parsed} ->
-        case cast_argument(argument.type, raw_value) do
-          {:ok, value} ->
-            {:cont, {:ok, Map.put(parsed, argument.name, value)}}
+      |> Enum.reduce_while({:ok, %{}}, &parse_argument(&1, &2, path))
+    end
+  end
 
-          :error when argument.type == :host_name ->
-            {:halt,
-             {:error, "Invalid #{argument.value_name}; expected a lowercase host name", path}}
+  defp parse_argument({argument, raw_value}, {:ok, parsed}, path) do
+    case cast_argument(argument.type, raw_value) do
+      {:ok, value} ->
+        {:cont, {:ok, Map.put(parsed, argument.name, value)}}
 
-          :error ->
-            {:halt, {:error, "Invalid #{argument.value_name}: #{inspect(raw_value)}", path}}
-        end
-      end)
+      :error when argument.type == :host_name ->
+        {:halt, {:error, "Invalid #{argument.value_name}; expected a lowercase host name", path}}
+
+      :error ->
+        {:halt, {:error, "Invalid #{argument.value_name}: #{inspect(raw_value)}", path}}
     end
   end
 
@@ -222,7 +227,7 @@ defmodule Taskman.CLI.Execution.Parser do
   end
 
   defp cast_argument(:host_name, value) do
-    if Taskman.CLI.Config.Document.validate_host_name(value) == :ok,
+    if Document.validate_host_name(value) == :ok,
       do: {:ok, value},
       else: :error
   end
@@ -235,14 +240,14 @@ defmodule Taskman.CLI.Execution.Parser do
 
   defp cast_argument(_type, _value), do: :error
 
-  defp validate_required_options(%Command{options: command_options}, options, path) do
+  defp validate_required_options(%Registry.Command{options: command_options}, options, path) do
     case Enum.find(command_options, &(&1.required? and not Map.has_key?(options, &1.name))) do
       nil -> :ok
-      %Option{} = option -> {:error, "Missing required option #{option.long}", path}
+      %Registry.Option{} = option -> {:error, "Missing required option #{option.long}", path}
     end
   end
 
-  defp validate_constraints(%Command{constraints: constraints}, options, globals, path) do
+  defp validate_constraints(%Registry.Command{constraints: constraints}, options, globals, path) do
     Enum.reduce_while(constraints, :ok, fn
       {:at_least_one, fields}, :ok ->
         if Enum.any?(fields, &Map.has_key?(options, &1)) do
@@ -300,8 +305,7 @@ defmodule Taskman.CLI.Execution.Parser do
 
   defp format_fields(fields) do
     fields
-    |> Enum.map(&"--#{String.replace(Atom.to_string(&1), "_", "-")}")
-    |> Enum.join(", ")
+    |> Enum.map_join(", ", &"--#{String.replace(Atom.to_string(&1), "_", "-")}")
   end
 
   defp globals(cli_host, json?) do
@@ -331,26 +335,11 @@ defmodule Taskman.CLI.Execution.Parser do
         extract_globals(rest, kept, cli_host, json?, help?, true)
 
       token == "--host" ->
-        case rest do
-          [value | remaining] when is_binary(value) ->
-            if String.starts_with?(value, "--") do
-              {:error, "Missing value for --host", Enum.reverse(kept)}
-            else
-              validate_host_global(value, remaining, kept, json?, help?, version?)
-            end
-
-          _ ->
-            {:error, "Missing value for --host", Enum.reverse(kept)}
-        end
+        extract_host_global(rest, kept, json?, help?, version?)
 
       String.starts_with?(token, "--host=") ->
         value = String.replace_prefix(token, "--host=", "")
-
-        if value == "" do
-          {:error, "Missing value for --host", Enum.reverse(kept)}
-        else
-          validate_host_global(value, rest, kept, json?, help?, version?)
-        end
+        extract_inline_host_global(value, rest, kept, json?, help?, version?)
 
       token in [
         "--json=true",
@@ -367,8 +356,26 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
+  defp extract_host_global([value | remaining], kept, json?, help?, version?)
+       when is_binary(value) do
+    if String.starts_with?(value, "--") do
+      {:error, "Missing value for --host", Enum.reverse(kept)}
+    else
+      validate_host_global(value, remaining, kept, json?, help?, version?)
+    end
+  end
+
+  defp extract_host_global(_rest, kept, _json?, _help?, _version?),
+    do: {:error, "Missing value for --host", Enum.reverse(kept)}
+
+  defp extract_inline_host_global("", _rest, kept, _json?, _help?, _version?),
+    do: {:error, "Missing value for --host", Enum.reverse(kept)}
+
+  defp extract_inline_host_global(value, rest, kept, json?, help?, version?),
+    do: validate_host_global(value, rest, kept, json?, help?, version?)
+
   defp validate_host_global(value, rest, kept, json?, help?, version?) do
-    if Taskman.CLI.Config.Document.validate_host_name(value) == :ok,
+    if Document.validate_host_name(value) == :ok,
       do: extract_globals(rest, kept, value, json?, help?, version?),
       else: {:error, "Invalid host name for --host", Enum.reverse(kept)}
   end

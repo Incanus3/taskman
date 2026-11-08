@@ -32,179 +32,191 @@ defmodule Taskman.CLI.Commands.Tasks do
 
   defp execute_scoped(action, invocation, runtime_options, json?) do
     project_id = Map.fetch!(invocation.options, :project)
+    execute_project_action(action, invocation, project_id, runtime_options, json?)
+  end
 
-    case action do
-      :list ->
-        query = task_list_query(invocation.options)
-        request_options = if query == [], do: [], else: [params: query]
+  defp execute_project_action(:list, invocation, project_id, runtime_options, json?) do
+    query = task_list_query(invocation.options)
+    request_options = if query == [], do: [], else: [params: query]
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks",
-          request_options,
-          runtime_options,
-          json?,
-          {:collection, :task}
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks",
+      request_options,
+      runtime_options,
+      json?,
+      {:collection, :task}
+    )
+  end
 
-      :show ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
-        include_comments? = Map.get(invocation.options, :include_comments, false)
-        request_options = if include_comments?, do: [params: [include_comments: true]], else: []
+  defp execute_project_action(:show, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
+    include_comments? = Map.get(invocation.options, :include_comments, false)
+    request_options = if include_comments?, do: [params: [include_comments: true]], else: []
 
-        success_shape =
-          if include_comments?, do: {:member, :task_with_comments}, else: {:member, :task}
+    success_shape =
+      if include_comments?, do: {:member, :task_with_comments}, else: {:member, :task}
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}",
-          request_options,
-          runtime_options,
-          json?,
-          success_shape
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}",
+      request_options,
+      runtime_options,
+      json?,
+      success_shape
+    )
+  end
 
-      :blocking_show ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
+  defp execute_project_action(:blocking_show, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocking",
-          [],
-          runtime_options,
-          json?,
-          :task_blocking
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocking",
+      [],
+      runtime_options,
+      json?,
+      :task_blocking
+    )
+  end
 
-      action when action in [:blocks_add, :blocks_remove] ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
-        target_id = Map.fetch!(invocation.options, :target)
-        method = if action == :blocks_add, do: :post, else: :delete
+  defp execute_project_action(action, invocation, project_id, runtime_options, json?)
+       when action in [:blocks_add, :blocks_remove] do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
+    target_id = Map.fetch!(invocation.options, :target)
+    method = if action == :blocks_add, do: :post, else: :delete
 
-        request(
-          invocation,
-          method,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocks/#{target_id}",
-          [],
-          runtime_options,
-          json?,
-          :task_blocking_edge
-        )
+    request(
+      invocation,
+      method,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocks/#{target_id}",
+      [],
+      runtime_options,
+      json?,
+      :task_blocking_edge
+    )
+  end
 
-      :activity_list ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
+  defp execute_project_action(:activity_list, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
 
-        request_options =
-          if Map.get(invocation.options, :include_comments, false),
-            do: [params: [include_comments: true]],
-            else: []
+    request_options =
+      if Map.get(invocation.options, :include_comments, false),
+        do: [params: [include_comments: true]],
+        else: []
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/activity",
-          request_options,
-          runtime_options,
-          json?,
-          {:collection, :activity_entry}
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/activity",
+      request_options,
+      runtime_options,
+      json?,
+      {:collection, :activity_entry}
+    )
+  end
 
-      :comments_list ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
+  defp execute_project_action(:comments_list, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
-          [],
-          runtime_options,
-          json?,
-          {:collection, :comment}
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
+      [],
+      runtime_options,
+      json?,
+      {:collection, :comment}
+    )
+  end
 
-      :comments_add ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
-        comment = %{"text" => Map.fetch!(invocation.options, :text)}
+  defp execute_project_action(:comments_add, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
+    comment = %{"text" => Map.fetch!(invocation.options, :text)}
 
-        comment =
-          if Map.has_key?(invocation.options, :author_name),
-            do: Map.put(comment, "author_name", Map.fetch!(invocation.options, :author_name)),
-            else: comment
+    comment =
+      if Map.has_key?(invocation.options, :author_name),
+        do: Map.put(comment, "author_name", Map.fetch!(invocation.options, :author_name)),
+        else: comment
 
-        request(
-          invocation,
-          :post,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
-          [json: %{"comment" => comment}],
-          runtime_options,
-          json?,
-          {:member, :comment}
-        )
+    request(
+      invocation,
+      :post,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
+      [json: %{"comment" => comment}],
+      runtime_options,
+      json?,
+      {:member, :comment}
+    )
+  end
 
-      :hierarchy ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
+  defp execute_project_action(:hierarchy, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
 
-        request(
-          invocation,
-          :get,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/hierarchy",
-          [],
-          runtime_options,
-          json?,
-          :hierarchy
-        )
+    request(
+      invocation,
+      :get,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/hierarchy",
+      [],
+      runtime_options,
+      json?,
+      :hierarchy
+    )
+  end
 
-      :create ->
-        task = task_fields(invocation.options)
-        task = maybe_put_list(task, invocation.options)
-        task = maybe_put_parent(task, invocation.options)
-        body = %{"task" => task}
+  defp execute_project_action(:create, invocation, project_id, runtime_options, json?) do
+    task = task_fields(invocation.options)
+    task = maybe_put_list(task, invocation.options)
+    task = maybe_put_parent(task, invocation.options)
+    body = %{"task" => task}
 
-        request(
-          invocation,
-          :post,
-          "/api/v1/projects/#{project_id}/tasks",
-          [json: body],
-          runtime_options,
-          json?
-        )
+    request(
+      invocation,
+      :post,
+      "/api/v1/projects/#{project_id}/tasks",
+      [json: body],
+      runtime_options,
+      json?
+    )
+  end
 
-      :update ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
-        task = task_fields(invocation.options)
-        task = maybe_clear_due_at(task, invocation.options)
-        task = maybe_update_parent(task, invocation.options)
-        body = %{"task" => task} |> maybe_put_done_confirmation(invocation.options)
+  defp execute_project_action(:update, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
+    task = task_fields(invocation.options)
+    task = maybe_clear_due_at(task, invocation.options)
+    task = maybe_update_parent(task, invocation.options)
+    body = %{"task" => task} |> maybe_put_done_confirmation(invocation.options)
 
-        request(
-          invocation,
-          :patch,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}",
-          [json: body],
-          runtime_options,
-          json?
-        )
+    request(
+      invocation,
+      :patch,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}",
+      [json: body],
+      runtime_options,
+      json?
+    )
+  end
 
-      :move ->
-        task_id = Map.fetch!(invocation.arguments, :task_id)
-        destination = %{"list_id" => destination_list_id(invocation.options)}
-        body = %{"destination" => destination}
+  defp execute_project_action(:move, invocation, project_id, runtime_options, json?) do
+    task_id = Map.fetch!(invocation.arguments, :task_id)
+    destination = %{"list_id" => destination_list_id(invocation.options)}
+    body = %{"destination" => destination}
 
-        request(
-          invocation,
-          :post,
-          "/api/v1/projects/#{project_id}/tasks/#{task_id}/move",
-          [json: body],
-          runtime_options,
-          json?
-        )
+    request(
+      invocation,
+      :post,
+      "/api/v1/projects/#{project_id}/tasks/#{task_id}/move",
+      [json: body],
+      runtime_options,
+      json?
+    )
+  end
 
-      _other ->
-        internal_error(json?)
-    end
+  defp execute_project_action(_action, _invocation, _project_id, _runtime_options, json?) do
+    internal_error(json?)
   end
 
   defp task_list_query(options) do

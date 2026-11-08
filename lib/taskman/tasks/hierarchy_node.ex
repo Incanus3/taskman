@@ -1,4 +1,6 @@
 defmodule Taskman.Tasks.HierarchyNode do
+  @moduledoc "A Task and its descendants in a hierarchy projection."
+
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.Task
 

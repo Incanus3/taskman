@@ -6,7 +6,7 @@ defmodule Taskman.Tasks.Activity.Persistence do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{Activity, Task}
   alias Taskman.Tasks.Activity.{Event, EventTask}
 
   @type attrs :: %{
@@ -62,7 +62,7 @@ defmodule Taskman.Tasks.Activity.Persistence do
     )
   end
 
-  @spec event_tasks(pos_integer()) :: [Taskman.Tasks.Activity.affected_task()]
+  @spec event_tasks(pos_integer()) :: [Activity.affected_task()]
   def event_tasks(event_id) do
     Repo.all(
       from event_task in EventTask,
@@ -75,7 +75,7 @@ defmodule Taskman.Tasks.Activity.Persistence do
 
   @doc "Replaces associations with surviving Task IDs and returns their Project/Task pairs."
   @spec replace_event_tasks(pos_integer(), [pos_integer()]) ::
-          [Taskman.Tasks.Activity.affected_task()]
+          [Activity.affected_task()]
   def replace_event_tasks(event_id, task_ids) do
     Repo.delete_all(from event_task in EventTask, where: event_task.event_id == ^event_id)
 

@@ -1,4 +1,6 @@
 defmodule Taskman.Lists.NavigationNode do
+  @moduledoc "A List navigation row with expansion and selection state."
+
   @enforce_keys [:dom_id, :kind, :depth, :project, :expanded?, :expandable?, :selected?]
   defstruct [
     :dom_id,

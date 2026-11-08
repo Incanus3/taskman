@@ -27,10 +27,8 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     {:ok, conn: put_api_key(conn, plaintext), user: user}
   end
 
-  alias Taskman.Repo
-  alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks
+  alias Taskman.{Repo, Tasks}
+  alias Taskman.Tasks.{Conflict, Task}
   alias TaskmanWeb.API.FallbackController
 
   test "create, update and move attribute history to the API key owner", %{conn: conn, user: user} do

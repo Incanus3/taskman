@@ -1,8 +1,9 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
+  @moduledoc "Tracks scoped Task parent candidates, selection and validation errors."
+
   alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.{Task, TaskWithLocation}
+  alias Taskman.Tasks.{Conflict, Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Tasks.Messages
 
   defstruct mode: nil,
@@ -117,22 +118,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
         clear_draft(state)
 
       {:ok, parent_id} ->
-        case find_parent(state, project, parent_id) do
-          %Task{} = parent ->
-            error = if same_parent?(state.selected_parent, parent), do: state.error, else: nil
-
-            %{
-              state
-              | query: parent_query(parent),
-                selected_parent: parent,
-                options_open?: false,
-                active_option_id: nil,
-                error: error
-            }
-
-          nil ->
-            %{state | options_open?: false, active_option_id: nil}
-        end
+        select_resolved_parent(state, find_parent(state, project, parent_id))
 
       :invalid ->
         %{state | options_open?: false, active_option_id: nil}
@@ -347,6 +333,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   end
 
   defp show_no_parent?(%__MODULE__{mode: :edit}), do: true
+
   defp show_no_parent?(%__MODULE__{selected_parent: %Task{}}), do: true
   defp show_no_parent?(%__MODULE__{}), do: false
 
@@ -360,15 +347,19 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   end
 
   defp normalize_parent(nil), do: nil
+
   defp normalize_parent(%Task{} = parent), do: parent
   defp normalize_parent(%TaskWithLocation{task: %Task{} = parent}), do: parent
+
   defp normalize_parent(_parent), do: nil
 
   defp parent_query(nil), do: ""
+
   defp parent_query(%Task{title: title}) when is_binary(title), do: title
   defp parent_query(%Task{}), do: ""
 
   defp normalize_parent_id(nil), do: :clear
+
   defp normalize_parent_id(""), do: :clear
   defp normalize_parent_id(id) when is_integer(id) and id > 0, do: {:ok, id}
 
@@ -396,6 +387,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   end
 
   defp same_parent?(%Task{id: left_id}, %Task{id: right_id}), do: left_id == right_id
+
   defp same_parent?(_, _), do: false
 
   defp changeset_error_message(%Ecto.Changeset{} = changeset) do
@@ -469,6 +461,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   end
 
   defp parent_conflict?(%__MODULE__{parent_conflicted?: true}), do: true
+
   defp parent_conflict?(%__MODULE__{conflict_parent: %Task{}}), do: true
   defp parent_conflict?(%__MODULE__{}), do: false
 
@@ -478,4 +471,20 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   end
 
   defp task_parent(%Project{}, %Task{}), do: nil
+
+  defp select_resolved_parent(state, %Task{} = parent) do
+    error = if same_parent?(state.selected_parent, parent), do: state.error, else: nil
+
+    %{
+      state
+      | query: parent_query(parent),
+        selected_parent: parent,
+        options_open?: false,
+        active_option_id: nil,
+        error: error
+    }
+  end
+
+  defp select_resolved_parent(state, nil),
+    do: %{state | options_open?: false, active_option_id: nil}
 end

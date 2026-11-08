@@ -1,11 +1,11 @@
 defmodule TaskmanWeb.WorkspaceNavigation do
+  @moduledoc "Renders the expandable Project and List navigation tree."
+
   use TaskmanWeb, :html
 
-  alias Taskman.Lists.NavigationNode
-  alias Taskman.Lists.TaskList
+  alias Taskman.Lists.{NavigationNode, TaskList}
   alias Taskman.Projects.Project
-  alias TaskmanWeb.ProjectLive.ListEdit
-  alias TaskmanWeb.ProjectLive.Paths
+  alias TaskmanWeb.ProjectLive.{ListEdit, Paths}
   alias TaskmanWeb.TaskCountBadge
 
   @doc "Renders the selected Project root and its visible List tree."
@@ -282,6 +282,7 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   defp root_form_active?(_list_edit, _project), do: false
 
   defp selection_link_id(%NavigationNode{task_list: %TaskList{id: id}}), do: "select-list-#{id}"
+
   defp toggle_id(%NavigationNode{task_list: %TaskList{id: id}}), do: "toggle-list-#{id}"
 
   defp toggle_label(%NavigationNode{task_list: %TaskList{name: name}, expanded?: expanded?}) do

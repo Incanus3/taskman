@@ -1,10 +1,11 @@
 defmodule Taskman.Tasks.Search do
+  @moduledoc "Task search and query filtering."
+
   import Ecto.Query
 
-  alias Taskman.Lists
+  alias Taskman.{Lists, Repo}
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Repo
   alias Taskman.Tasks.Task
 
   @result_limit 20

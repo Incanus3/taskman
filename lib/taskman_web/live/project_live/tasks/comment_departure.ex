@@ -1,8 +1,7 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.CommentDeparture do
   @moduledoc false
 
-  alias Taskman.Lists
-  alias Taskman.Projects
+  alias Taskman.{Lists, Projects}
   alias Taskman.Projects.Project
 
   defstruct destination: nil,

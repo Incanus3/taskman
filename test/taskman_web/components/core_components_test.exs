@@ -22,7 +22,7 @@ defmodule TaskmanWeb.CoreComponentsTest do
     html = render_component(&ordinary_input/1, %{}) |> LazyHTML.from_fragment()
 
     assert Enum.count(LazyHTML.query(html, "#project-name.input")) == 1
-    assert Enum.count(LazyHTML.query(html, "span.input")) == 0
+    assert Enum.empty?(LazyHTML.query(html, "span.input"))
   end
 
   test "shown modal removes its hidden attribute on mount" do

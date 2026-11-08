@@ -3,10 +3,10 @@ defmodule Taskman.Accounts.User.AdminEmailManagementTest do
 
   import Swoosh.TestAssertions
 
+  alias Ash.Resource
   alias AshAuthentication.Jwt
-  alias Taskman.Accounts
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.{Token, User}
-  alias Taskman.Repo
 
   setup :set_swoosh_global
 
@@ -152,7 +152,7 @@ defmodule Taskman.Accounts.User.AdminEmailManagementTest do
     administrator = admin_fixture("direct-email-administrator@example.com")
     target = active_fixture("direct-email-target@example.com")
 
-    assert %{} = Ash.Resource.Info.action(User, :manage_email)
+    assert %{} = Resource.Info.action(User, :manage_email)
 
     for obsolete_action <- [
           :manage_confirmed_email,
@@ -161,7 +161,7 @@ defmodule Taskman.Accounts.User.AdminEmailManagementTest do
           :replace_pending_confirmed_email,
           :confirm_existing_email
         ] do
-      assert is_nil(Ash.Resource.Info.action(User, obsolete_action))
+      assert is_nil(Resource.Info.action(User, obsolete_action))
     end
 
     assert {:ok, managed} =

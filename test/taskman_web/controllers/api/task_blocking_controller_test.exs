@@ -6,8 +6,7 @@ defmodule TaskmanWeb.API.TaskBlockingControllerTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Accounts
-  alias Taskman.Tasks
+  alias Taskman.{Accounts, Tasks}
 
   setup %{conn: conn} do
     user = user_fixture()

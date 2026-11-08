@@ -9,6 +9,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
 
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
+  alias Taskman.Tasks.Activity
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -20,7 +21,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     project = project_fixture(%{})
     task = task_fixture(project)
 
-    Taskman.Repo.get_by!(Taskman.Tasks.Activity.Event, task_id: task.id, kind: "task_created")
+    Taskman.Repo.get_by!(Activity.Event, task_id: task.id, kind: "task_created")
     |> Taskman.Repo.delete!()
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")

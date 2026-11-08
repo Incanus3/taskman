@@ -6,6 +6,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
+  alias Taskman.Tasks.Task
 
   test "remembered branches survive promotion and returning ancestors" do
     project = project_fixture(%{})
@@ -407,7 +408,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
     child_a = task_fixture(project, %{}, parent: first)
     child_b = task_fixture(project, %{}, parent: first)
     import Ecto.Query
-    Taskman.Repo.update_all(Taskman.Tasks.Task, set: [inserted_at: ~U[2026-01-01 00:00:00Z]])
+    Taskman.Repo.update_all(Task, set: [inserted_at: ~U[2026-01-01 00:00:00Z]])
 
     assert {:ok, projection} =
              Tasks.list_task_rows_for_location(project, nil,
@@ -421,7 +422,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
              {second.id, 0}
            ]
 
-    from(task in Taskman.Tasks.Task, where: task.id in ^[second.id, child_b.id])
+    from(task in Task, where: task.id in ^[second.id, child_b.id])
     |> Taskman.Repo.update_all(set: [inserted_at: ~U[2025-01-01 00:00:00Z]])
 
     assert {:ok, projection} =
@@ -463,7 +464,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
     task_fixture(project, occupied, %{status: :done})
 
     for {location, statuses, filtered?} <- [
-          {empty, Taskman.Tasks.Task.statuses(), false},
+          {empty, Task.statuses(), false},
           {empty, [], false},
           {empty, [:pending], false},
           {occupied, [], true},
@@ -509,7 +510,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
     assert length(single_queries) == length(many_queries)
     assert length(single_queries) == length(deep_queries)
     assert length(deep_queries) <= 4
-    assert length(deep_queries) > 0
+    assert deep_queries != []
 
     assert Enum.all?(
              deep_queries,

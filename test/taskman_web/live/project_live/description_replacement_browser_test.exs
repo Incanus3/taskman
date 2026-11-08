@@ -91,7 +91,9 @@ defmodule TaskmanWeb.ProjectLive.DescriptionReplacementBrowserTest do
         Tasks.get_task_for_project(c.project, c.task.id),
         %{
           title: "Unrelated update"
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-title[value='Unrelated update']"))
     assert editor_id(c.session) == replaced_id
@@ -111,7 +113,9 @@ defmodule TaskmanWeb.ProjectLive.DescriptionReplacementBrowserTest do
         Tasks.get_task_for_project(c.project, c.task.id),
         %{
           description: "Clean replacement"
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("[data-editor-visual]", text: "Clean replacement"))
     Browser.find(c.session, Query.css("[data-editor-id][data-leaf-mount-state='ready']"))

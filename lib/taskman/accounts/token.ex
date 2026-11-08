@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.Token do
+  @moduledoc "Stored authentication tokens, redemption, revocation, and session disconnection."
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     extensions: [AshAuthentication.TokenResource],
@@ -32,18 +34,17 @@ defmodule Taskman.Accounts.Token do
   end
 
   alias AshAuthentication.{Jwt, TokenResource}
-  alias Taskman.Accounts
+  alias Phoenix.Channel
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.User
-  alias Taskman.Repo
 
   @browser_session_purposes ["user"]
   @socket_topic_prefix "taskman_sessions:"
 
   @spec valid_for_purpose?(String.t(), String.t(), DateTime.t()) :: :ok | {:error, :invalid_token}
   def valid_for_purpose?(token, purpose, now \\ DateTime.utc_now()) do
-    with {:ok, _stored_token, _claims} <- verified_stored_token(token, purpose, now, false) do
-      :ok
-    else
+    case verified_stored_token(token, purpose, now, false) do
+      {:ok, _stored_token, _claims} -> :ok
       _ -> {:error, :invalid_token}
     end
   end
@@ -52,9 +53,8 @@ defmodule Taskman.Accounts.Token do
   @spec claim_for_redemption(String.t(), String.t(), DateTime.t()) ::
           {:ok, t()} | {:error, :invalid_token}
   def claim_for_redemption(token, purpose, now \\ DateTime.utc_now()) do
-    with {:ok, stored_token, _claims} <- verified_stored_token(token, purpose, now, true) do
-      {:ok, stored_token}
-    else
+    case verified_stored_token(token, purpose, now, true) do
+      {:ok, stored_token, _claims} -> {:ok, stored_token}
       _ -> {:error, :invalid_token}
     end
   end
@@ -71,7 +71,7 @@ defmodule Taskman.Accounts.Token do
   def browser_session_purposes, do: @browser_session_purposes
 
   @doc false
-  @spec browser_session_topics(Taskman.Accounts.User.t(), keyword()) ::
+  @spec browser_session_topics(User.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()}
   def browser_session_topics(user, opts \\ []) do
     excluded_jti = Keyword.get(opts, :except_jti)
@@ -108,11 +108,11 @@ defmodule Taskman.Accounts.Token do
   @doc false
   @spec broadcast_disconnect(String.t()) :: :ok | {:error, term()}
   def broadcast_disconnect(topic) when is_binary(topic) do
-    Phoenix.Channel.Server.broadcast(Taskman.PubSub, topic, "disconnect", %{})
+    Channel.Server.broadcast(Taskman.PubSub, topic, "disconnect", %{})
   end
 
   @doc false
-  @spec revoke_browser_sessions(Taskman.Accounts.User.t(), keyword()) :: :ok | {:error, term()}
+  @spec revoke_browser_sessions(User.t(), keyword()) :: :ok | {:error, term()}
   def revoke_browser_sessions(user, opts \\ []) do
     case Keyword.get(opts, :session_revoker) do
       nil ->
@@ -133,21 +133,14 @@ defmodule Taskman.Accounts.Token do
   end
 
   @doc false
-  @spec revoke_browser_sessions_with_jtis(Taskman.Accounts.User.t(), keyword()) ::
+  @spec revoke_browser_sessions_with_jtis(User.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()}
   def revoke_browser_sessions_with_jtis(user, opts \\ []) do
     case Keyword.get(opts, :session_revoker) do
       nil ->
         transact(fn ->
           @browser_session_purposes
-          |> Enum.reduce_while({:ok, []}, fn purpose, {:ok, revoked} ->
-            with {:ok, tokens} <- tokens_for_subject(user, purpose),
-                 {:ok, jtis} <- revoke_tokens(tokens) do
-              {:cont, {:ok, revoked ++ jtis}}
-            else
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end)
+          |> Enum.reduce_while({:ok, []}, &revoke_session_purpose(user, &1, &2))
         end)
 
       revoker when is_function(revoker, 1) ->
@@ -162,7 +155,7 @@ defmodule Taskman.Accounts.Token do
     end
   end
 
-  @spec revoke_for_subject(Taskman.Accounts.User.t(), String.t(), keyword()) ::
+  @spec revoke_for_subject(User.t(), String.t(), keyword()) ::
           :ok | {:error, term()}
   def revoke_for_subject(user, purpose, opts \\ []) do
     with {:ok, jtis} <- revoke_for_subject_with_jtis(user, purpose, opts) do
@@ -175,18 +168,17 @@ defmodule Taskman.Accounts.Token do
   end
 
   @doc false
-  @spec revoke_for_subject_with_jtis(Taskman.Accounts.User.t(), String.t(), keyword()) ::
+  @spec revoke_for_subject_with_jtis(User.t(), String.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()}
   def revoke_for_subject_with_jtis(user, purpose, _opts \\ []) do
     transact(fn ->
-      with {:ok, tokens} <- tokens_for_subject(user, purpose),
-           {:ok, jtis} <- revoke_tokens(tokens) do
-        {:ok, jtis}
+      with {:ok, tokens} <- tokens_for_subject(user, purpose) do
+        revoke_tokens(tokens)
       end
     end)
   end
 
-  @spec revoke_for_subject_except(Taskman.Accounts.User.t(), String.t(), String.t(), keyword()) ::
+  @spec revoke_for_subject_except(User.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, term()}
   def revoke_for_subject_except(user, purpose, excluded_jti, opts \\ []) do
     with {:ok, jtis} <- revoke_for_subject_except_with_jtis(user, purpose, excluded_jti, opts) do
@@ -200,7 +192,7 @@ defmodule Taskman.Accounts.Token do
 
   @doc false
   @spec revoke_for_subject_except_with_jtis(
-          Taskman.Accounts.User.t(),
+          User.t(),
           String.t(),
           String.t(),
           keyword()
@@ -208,14 +200,13 @@ defmodule Taskman.Accounts.Token do
   def revoke_for_subject_except_with_jtis(user, purpose, excluded_jti, _opts \\ []) do
     transact(fn ->
       with {:ok, tokens} <- tokens_for_subject(user, purpose),
-           tokens <- Enum.reject(tokens, &(&1.jti == excluded_jti)),
-           {:ok, jtis} <- revoke_tokens(tokens) do
-        {:ok, jtis}
+           tokens <- Enum.reject(tokens, &(&1.jti == excluded_jti)) do
+        revoke_tokens(tokens)
       end
     end)
   end
 
-  @spec revoke_all_for_subject(Taskman.Accounts.User.t()) :: :ok | {:error, term()}
+  @spec revoke_all_for_subject(User.t()) :: :ok | {:error, term()}
   def revoke_all_for_subject(user) do
     with {:ok, entries} <- revoke_all_for_subject_with_jtis(user) do
       entries
@@ -226,7 +217,7 @@ defmodule Taskman.Accounts.Token do
   end
 
   @doc false
-  @spec revoke_all_for_subject_with_jtis(Taskman.Accounts.User.t()) ::
+  @spec revoke_all_for_subject_with_jtis(User.t()) ::
           {:ok, [{String.t(), String.t()}]} | {:error, term()}
   def revoke_all_for_subject_with_jtis(user) do
     transact(fn ->
@@ -258,22 +249,14 @@ defmodule Taskman.Accounts.Token do
   end
 
   @doc false
-  @spec establish_browser_session(Taskman.Accounts.User.t(), String.t(), String.t() | nil) ::
+  @spec establish_browser_session(User.t(), String.t(), String.t() | nil) ::
           {:ok, [String.t()]} | {:error, term()}
   def establish_browser_session(user, token, previous_token)
       when is_struct(user) and is_binary(token) do
     subject = AshAuthentication.user_to_subject(user)
 
     case Ash.transact([__MODULE__], fn ->
-           with {:ok, new_record, %{"sub" => ^subject}} <- claim_browser_session(token),
-                {:ok, retired_jtis} <-
-                  retire_previous_session(previous_token, subject, new_record.jti) do
-             {:ok, retired_jtis}
-           else
-             {:ok, _record, _claims} -> {:error, :invalid_session}
-             {:error, _reason} = error -> error
-             _ -> {:error, :invalid_session}
-           end
+           establish_stored_session(token, previous_token, subject)
          end) do
       {:ok, {:ok, retired_jtis}} -> {:ok, retired_jtis}
       {:error, _reason} = error -> error
@@ -383,6 +366,27 @@ defmodule Taskman.Accounts.Token do
 
     policy always() do
       forbid_if always()
+    end
+  end
+
+  defp revoke_session_purpose(user, purpose, {:ok, revoked}) do
+    with {:ok, tokens} <- tokens_for_subject(user, purpose),
+         {:ok, jtis} <- revoke_tokens(tokens) do
+      {:cont, {:ok, revoked ++ jtis}}
+    else
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp establish_stored_session(token, previous_token, subject) do
+    with {:ok, new_record, %{"sub" => ^subject}} <- claim_browser_session(token),
+         {:ok, retired_jtis} <-
+           retire_previous_session(previous_token, subject, new_record.jti) do
+      {:ok, retired_jtis}
+    else
+      {:ok, _record, _claims} -> {:error, :invalid_session}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_session}
     end
   end
 end

@@ -1,17 +1,11 @@
 defmodule TaskmanWeb.API.TaskController do
   use TaskmanWeb, :controller
 
-  action_fallback TaskmanWeb.API.FallbackController
+  alias Taskman.{Lists, Projects, Tasks}
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task, TaskWithLocation}
+  alias TaskmanWeb.API.{FallbackController, Params, Representation}
 
-  alias Taskman.Lists
-  alias Taskman.Projects
-  alias Taskman.Tasks
-  alias Taskman.Tasks.Hierarchy
-  alias Taskman.Tasks.HierarchyNode
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.API.Params
-  alias TaskmanWeb.API.Representation
+  action_fallback FallbackController
 
   @editable_fields ~w(title description status priority due_at parent_task_id)
   @task_sort_fields %{
@@ -194,6 +188,7 @@ defmodule TaskmanWeb.API.TaskController do
   end
 
   defp include_descendants?(%{"include_descendants" => "true"}), do: true
+
   defp include_descendants?(_params), do: false
 
   defp task_query_options(params) do
@@ -213,16 +208,7 @@ defmodule TaskmanWeb.API.TaskController do
         {:ok, nil}
 
       {:ok, statuses} when is_list(statuses) and statuses != [] ->
-        Enum.reduce_while(statuses, {:ok, []}, fn status, {:ok, parsed} ->
-          case Enum.find(Task.statuses(), &(Atom.to_string(&1) == status)) do
-            nil -> {:halt, {:error, :invalid_request}}
-            parsed_status -> {:cont, {:ok, [parsed_status | parsed]}}
-          end
-        end)
-        |> case do
-          {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
-          error -> error
-        end
+        parse_task_statuses(statuses)
 
       {:ok, status} when is_binary(status) and status != "" ->
         task_statuses(%{"statuses" => [status]})
@@ -252,6 +238,7 @@ defmodule TaskmanWeb.API.TaskController do
   end
 
   defp maybe_put_task_option(options, _key, nil), do: options
+
   defp maybe_put_task_option(options, key, value), do: Keyword.put(options, key, value)
 
   defp destination_list_id(destination) do
@@ -343,5 +330,21 @@ defmodule TaskmanWeb.API.TaskController do
   defp task_data(project, task) do
     project_lists = Lists.list_lists_for_project(project)
     Representation.task(task, project_lists)
+  end
+
+  defp parse_task_statuses(statuses) do
+    statuses
+    |> Enum.reduce_while({:ok, []}, &parse_task_status/2)
+    |> case do
+      {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+      error -> error
+    end
+  end
+
+  defp parse_task_status(status, {:ok, parsed}) do
+    case Enum.find(Task.statuses(), &(Atom.to_string(&1) == status)) do
+      nil -> {:halt, {:error, :invalid_request}}
+      parsed_status -> {:cont, {:ok, [parsed_status | parsed]}}
+    end
   end
 end

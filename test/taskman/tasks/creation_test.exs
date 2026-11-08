@@ -5,6 +5,7 @@ defmodule Taskman.Tasks.CreationTest do
   import Taskman.ListsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks
 
   test "create_task/2 assigns ownership and product defaults" do
@@ -46,7 +47,9 @@ defmodule Taskman.Tasks.CreationTest do
                %{
                  title: "Direct task",
                  list_id: list.id
-               }, actor: Taskman.AccountsFixtures.user_fixture())
+               },
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert task.project_id == project.id
     assert task.list_id == nil
@@ -66,7 +69,9 @@ defmodule Taskman.Tasks.CreationTest do
                  title: "List task",
                  project_id: other_project.id,
                  list_id: other_list.id
-               }, actor: Taskman.AccountsFixtures.user_fixture())
+               },
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert task.project_id == project.id
     assert task.list_id == list.id
@@ -97,7 +102,7 @@ defmodule Taskman.Tasks.CreationTest do
     project = project_fixture(%{})
 
     result =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         INSERT INTO tasks (project_id, title, inserted_at, updated_at)
@@ -110,7 +115,7 @@ defmodule Taskman.Tasks.CreationTest do
     assert [[task_id, ""]] = result.rows
 
     assert %{rows: [[""]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT description FROM tasks WHERE id = $1",
                [task_id]
@@ -124,7 +129,7 @@ defmodule Taskman.Tasks.CreationTest do
       assert_raise Postgrex.Error, fn ->
         Repo.transaction(
           fn ->
-            Ecto.Adapters.SQL.query!(
+            SQL.query!(
               Repo,
               """
               INSERT INTO tasks (project_id, title, description, inserted_at, updated_at)
@@ -139,7 +144,7 @@ defmodule Taskman.Tasks.CreationTest do
 
     assert error.postgres.code == :not_null_violation
 
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 
   test "create_task/2 requires a title and ignores user-owned project IDs" do

@@ -1,8 +1,10 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
+  @moduledoc "Tracks per-field Task drafts, conflicts and scheduled persistence."
+
+  alias Phoenix.HTML.Form
   alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{BlockingPersistence, Conflict, Task}
 
   @editable_fields ~w(title description status priority due_at)
   @debounced_fields ~w(title description)
@@ -25,14 +27,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
   @type t :: %__MODULE__{
           actor: term(),
-          form: Phoenix.HTML.Form.t() | nil,
+          form: Form.t() | nil,
           baseline: Task.t() | nil,
           draft: map(),
           dirty_fields: MapSet.t(String.t()),
           revisions: %{optional(String.t()) => non_neg_integer()},
           conflicts: %{optional(String.t()) => term()},
           field_states: %{optional(String.t()) => field_state()},
-          done_warning: [Taskman.Tasks.BlockingPersistence.summary()] | nil,
+          done_warning: [BlockingPersistence.summary()] | nil,
           sequence: non_neg_integer(),
           save_failed?: boolean(),
           saved?: boolean(),
@@ -119,26 +121,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     autosave.dirty_fields
     |> MapSet.to_list()
     |> Enum.sort()
-    |> Enum.reduce_while({:ok, autosave, task, []}, fn field, {:ok, autosave, task, schedules} ->
-      cond do
-        Map.has_key?(autosave.conflicts, field) ->
-          {:cont, {:ok, clear_field_state(autosave, field), task, schedules}}
-
-        valid_field?(autosave, task, field) and field in @debounced_fields ->
-          {:schedule, autosave, task, delay_ms, message} = schedule_field(autosave, task, field)
-          {:cont, {:ok, autosave, task, [{delay_ms, message} | schedules]}}
-
-        valid_field?(autosave, task, field) ->
-          case persist_field(autosave, project, task, field) do
-            {:ok, autosave, task} -> {:cont, {:ok, autosave, task, schedules}}
-            {:conflict, autosave, task} -> {:cont, {:ok, autosave, task, schedules}}
-            {:not_found, autosave} -> {:halt, {:not_found, autosave}}
-          end
-
-        true ->
-          {:cont, {:ok, put_field_state(autosave, field, :not_saved), task, schedules}}
-      end
-    end)
+    |> Enum.reduce_while({:ok, autosave, task, []}, &restart_field(&1, &2, project))
     |> case do
       {:ok, autosave, task, schedules} ->
         {:ok, refresh_save_state(autosave), task, Enum.reverse(schedules)}
@@ -307,44 +290,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     if autosave.conflicts != %{} do
       {:error, refresh_save_state(autosave), task}
     else
-      {result, autosave, task, save_failed?} =
-        Enum.reduce_while(autosave.dirty_fields, {:ok, autosave, task, false}, fn field,
-                                                                                  {:ok, autosave,
-                                                                                   task,
-                                                                                   save_failed?} ->
-          autosave = %{autosave | save_failed?: false}
-
-          case persist_field(autosave, project, task, field) do
-            {:ok, autosave, task} ->
-              {:cont, {:ok, autosave, task, save_failed? || autosave.save_failed?}}
-
-            {:conflict, autosave, task} ->
-              {:halt, {:conflict, autosave, task, save_failed?}}
-
-            {:not_found, autosave} ->
-              {:halt, {:not_found, autosave, task, save_failed?}}
-          end
-        end)
-
-      case result do
-        :not_found ->
-          {:not_found, autosave}
-
-        :conflict ->
-          {:error, refresh_save_state(autosave), task}
-
-        :ok ->
-          autosave =
-            autosave
-            |> Map.put(:save_failed?, save_failed?)
-            |> refresh_save_state()
-
-          if save_failed? or MapSet.size(autosave.dirty_fields) > 0 do
-            {:error, autosave, task}
-          else
-            {:ok, autosave, task}
-          end
-      end
+      autosave.dirty_fields
+      |> Enum.reduce_while({:ok, autosave, task, false}, &flush_field(&1, &2, project))
+      |> finish_flush()
     end
   end
 
@@ -608,8 +556,61 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   end
 
   defp editable_field_atom("title"), do: :title
+
   defp editable_field_atom("description"), do: :description
   defp editable_field_atom("status"), do: :status
+
   defp editable_field_atom("priority"), do: :priority
   defp editable_field_atom("due_at"), do: :due_at
+
+  defp restart_field(field, {:ok, autosave, task, schedules}, project) do
+    cond do
+      Map.has_key?(autosave.conflicts, field) ->
+        {:cont, {:ok, clear_field_state(autosave, field), task, schedules}}
+
+      valid_field?(autosave, task, field) and field in @debounced_fields ->
+        {:schedule, autosave, task, delay_ms, message} = schedule_field(autosave, task, field)
+        {:cont, {:ok, autosave, task, [{delay_ms, message} | schedules]}}
+
+      valid_field?(autosave, task, field) ->
+        case persist_field(autosave, project, task, field) do
+          {:ok, autosave, task} -> {:cont, {:ok, autosave, task, schedules}}
+          {:conflict, autosave, task} -> {:cont, {:ok, autosave, task, schedules}}
+          {:not_found, autosave} -> {:halt, {:not_found, autosave}}
+        end
+
+      true ->
+        {:cont, {:ok, put_field_state(autosave, field, :not_saved), task, schedules}}
+    end
+  end
+
+  defp flush_field(field, {:ok, autosave, task, save_failed?}, project) do
+    autosave = %{autosave | save_failed?: false}
+
+    case persist_field(autosave, project, task, field) do
+      {:ok, autosave, task} ->
+        {:cont, {:ok, autosave, task, save_failed? || autosave.save_failed?}}
+
+      {:conflict, autosave, task} ->
+        {:halt, {:conflict, autosave, task, save_failed?}}
+
+      {:not_found, autosave} ->
+        {:halt, {:not_found, autosave, task, save_failed?}}
+    end
+  end
+
+  defp finish_flush({:not_found, autosave, _task, _save_failed?}), do: {:not_found, autosave}
+
+  defp finish_flush({:conflict, autosave, task, _save_failed?}),
+    do: {:error, refresh_save_state(autosave), task}
+
+  defp finish_flush({:ok, autosave, task, save_failed?}) do
+    autosave = autosave |> Map.put(:save_failed?, save_failed?) |> refresh_save_state()
+
+    if save_failed? or MapSet.size(autosave.dirty_fields) > 0 do
+      {:error, autosave, task}
+    else
+      {:ok, autosave, task}
+    end
+  end
 end

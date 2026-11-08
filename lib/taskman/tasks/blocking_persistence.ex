@@ -3,12 +3,11 @@ defmodule Taskman.Tasks.BlockingPersistence do
 
   import Ecto.Query
 
-  alias Taskman.Repo
-  alias Taskman.Lists
+  alias Ecto.Adapters.SQL
+  alias Taskman.{Lists, Repo}
   alias Taskman.Lists.TaskList
-  alias Taskman.Tasks.BlockingLink
-  alias Taskman.Tasks.Task
   alias Taskman.Projects.Project
+  alias Taskman.Tasks.{BlockingLink, Task}
 
   @type summary :: %{
           id: pos_integer(),
@@ -66,7 +65,7 @@ defmodule Taskman.Tasks.BlockingPersistence do
 
   def reachable?(from_task_id, target_task_id) do
     %{rows: [[reachable?]]} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         WITH RECURSIVE reachable(id) AS (

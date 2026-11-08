@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.ApiKey do
+  @moduledoc "Stored API keys and their authenticated account ownership."
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],

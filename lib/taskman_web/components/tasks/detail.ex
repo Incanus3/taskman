@@ -1,11 +1,23 @@
 defmodule TaskmanWeb.Tasks.Detail do
+  @moduledoc "Renders Task detail content and editing controls."
+
   use TaskmanWeb, :html
 
+  alias Phoenix.LiveView.ColocatedHook
   alias Taskman.Projects.Project
-  alias Taskman.Tasks.{Comment, Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.ProjectLive.Tasks.{Activity, Comments}
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
-  alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
+  alias Taskman.Tasks
+  alias Taskman.Tasks.{Comment, HierarchyNode, Task}
+
+  alias TaskmanWeb.ProjectLive.Tasks.{
+    Activity,
+    Autosave,
+    Comments,
+    Hierarchy,
+    Move,
+    ParentPicker,
+    RelatedTasksPicker
+  }
+
   alias TaskmanWeb.Tasks.{ActivityEntry, Form, MovePopover, Priority, RelatedTasks, Status, Table}
 
   attr :task, Task, required: true
@@ -47,7 +59,7 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :task_autosave, Autosave, required: true
   attr :parent_picker, ParentPicker, required: true
   attr :cancel, :string, required: true
-  attr :task_hierarchy, TaskHierarchy, required: true
+  attr :task_hierarchy, Hierarchy, required: true
   attr :task_path, :any, required: true
   attr :browse_path, :any, default: nil
   attr :task_move, Move, required: true
@@ -71,7 +83,7 @@ defmodule TaskmanWeb.Tasks.Detail do
       |> assign(:comments, %{comments | form: form})
       |> assign(:activity, assigns.activity || Activity.State.empty())
       |> assign(:related_picker, assigns.related_picker || RelatedTasksPicker.empty())
-      |> assign(:hierarchy_root, TaskHierarchy.visible_root(assigns.task_hierarchy))
+      |> assign(:hierarchy_root, Hierarchy.visible_root(assigns.task_hierarchy))
       |> assign(
         :hierarchy_status_form,
         to_form(
@@ -79,7 +91,7 @@ defmodule TaskmanWeb.Tasks.Detail do
           as: :hierarchy_status_filter
         )
       )
-      |> assign(:location_path, TaskHierarchy.selected_location_path(assigns.task_hierarchy))
+      |> assign(:location_path, Hierarchy.selected_location_path(assigns.task_hierarchy))
 
     ~H"""
     <div
@@ -466,7 +478,7 @@ defmodule TaskmanWeb.Tasks.Detail do
         </div>
       </div>
     </div>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskDetailTabs">
+    <script :type={ColocatedHook} name=".TaskDetailTabs">
       export default {
         mounted() {
           this.onKeydown = event => {
@@ -492,7 +504,7 @@ defmodule TaskmanWeb.Tasks.Detail do
         }
       }
     </script>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".CommentSubmitShortcut">
+    <script :type={ColocatedHook} name=".CommentSubmitShortcut">
       export default {
         mounted() {
           this.onKeydown = event => {
@@ -515,7 +527,7 @@ defmodule TaskmanWeb.Tasks.Detail do
     """
   end
 
-  attr :task_hierarchy, TaskHierarchy, required: true
+  attr :task_hierarchy, Hierarchy, required: true
 
   def hierarchy_sort(assigns) do
     {field, direction} = assigns.task_hierarchy.sort
@@ -593,14 +605,14 @@ defmodule TaskmanWeb.Tasks.Detail do
   end
 
   attr :node, HierarchyNode, required: true
-  attr :task_hierarchy, TaskHierarchy, required: true
+  attr :task_hierarchy, Hierarchy, required: true
   attr :task_path, :any, required: true
   attr :level, :integer, required: true
 
   def hierarchy_node(assigns) do
     collapsible? =
       has_children?(assigns.node) &&
-        TaskHierarchy.collapsible?(assigns.task_hierarchy, assigns.node.task.id)
+        Hierarchy.collapsible?(assigns.task_hierarchy, assigns.node.task.id)
 
     assigns = assign(assigns, :collapsible?, collapsible?)
 
@@ -628,7 +640,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             type="button"
             phx-click="toggle_task_hierarchy_node"
             phx-value-task-id={@node.task.id}
-            aria-expanded={to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))}
+            aria-expanded={to_string(Hierarchy.expanded?(@task_hierarchy, @node.task.id))}
             aria-controls={"task-hierarchy-group-#{@node.task.id}"}
             aria-label={"Toggle #{String.trim(@node.task.title || "")}"}
             data-tooltip=""
@@ -636,7 +648,7 @@ defmodule TaskmanWeb.Tasks.Detail do
           >
             <.icon
               name={
-                if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
+                if(Hierarchy.expanded?(@task_hierarchy, @node.task.id),
                   do: "hero-chevron-down",
                   else: "hero-chevron-right"
                 )
@@ -678,13 +690,13 @@ defmodule TaskmanWeb.Tasks.Detail do
       <ul
         :if={has_children?(@node)}
         id={"task-hierarchy-group-#{@node.task.id}"}
-        hidden={!TaskHierarchy.expanded?(@task_hierarchy, @node.task.id)}
+        hidden={!Hierarchy.expanded?(@task_hierarchy, @node.task.id)}
         class="task-hierarchy-group"
       >
         <.hierarchy_node
           :for={
             child <-
-              if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
+              if(Hierarchy.expanded?(@task_hierarchy, @node.task.id),
                 do: @node.children,
                 else: []
               )
@@ -699,8 +711,8 @@ defmodule TaskmanWeb.Tasks.Detail do
     """
   end
 
-  defp hierarchy_content?(%TaskHierarchy{
-         hierarchy: %Hierarchy{
+  defp hierarchy_content?(%Hierarchy{
+         hierarchy: %Tasks.Hierarchy{
            root: %HierarchyNode{task: root_task, children: children},
            selected_task_id: selected_task_id
          }
@@ -708,7 +720,7 @@ defmodule TaskmanWeb.Tasks.Detail do
     root_task.id != selected_task_id or children != []
   end
 
-  defp hierarchy_content?(%TaskHierarchy{}), do: false
+  defp hierarchy_content?(%Hierarchy{}), do: false
 
   defp has_children?(%HierarchyNode{children: children}), do: children != []
 end

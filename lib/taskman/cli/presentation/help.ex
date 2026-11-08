@@ -73,8 +73,7 @@ defmodule Taskman.CLI.Presentation.Help do
   defp render_group(path) do
     children =
       Registry.commands()
-      |> Enum.filter(&prefix?(&1.path, path))
-      |> Enum.filter(&(length(&1.path) > length(path)))
+      |> Enum.filter(&(prefix?(&1.path, path) and length(&1.path) > length(path)))
 
     lines =
       [

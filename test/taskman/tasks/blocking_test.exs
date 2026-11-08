@@ -6,8 +6,7 @@ defmodule Taskman.Tasks.BlockingTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
-  alias Taskman.Tasks.BlockingPersistence
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{BlockingPersistence, Task}
 
   test "finds a relationship target by exact Task ID across Projects" do
     first_project = project_fixture(%{})

@@ -8,6 +8,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Taskman.ChangeNotifications.Event
   alias Taskman.{Repo, Tasks}
 
   setup %{conn: conn} do
@@ -910,7 +911,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
   end
 
   defp notify_nested_move(view, task) do
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :task,
       operation: :updated,
       project_id: task.project_id,

@@ -2,9 +2,7 @@ defmodule Taskman.Tasks.Counts do
   @moduledoc false
 
   alias Taskman.Projects.Project
-  alias Taskman.Tasks.CountPersistence
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.Status
+  alias Taskman.Tasks.{CountPersistence, Status, Task}
 
   @type pair :: %{visible: non_neg_integer(), eligible: non_neg_integer()}
   @type t :: %{(pos_integer() | nil) => pair()}
